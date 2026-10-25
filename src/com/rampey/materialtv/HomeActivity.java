@@ -265,6 +265,7 @@ public class HomeActivity extends Activity {
         super.onCreate(state);
         pm = getPackageManager();
         prefs = new Prefs(this);
+        if (prefs.colorSeed() != 0) palette = Palette.of(prefs.colorSeed());
         setContentView(buildRoot());
         openStartApp();
     }
@@ -957,6 +958,15 @@ public class HomeActivity extends Activity {
     }
 
     private Palette paletteFor(String pkg, Drawable art) {
+        int fixed = prefs.colorSeed();
+        if (fixed != 0) {                               // a color theme chosen in Launcher settings
+            Palette theme = paletteCache.get(fixed);
+            if (theme == null) {
+                theme = Palette.of(fixed);
+                paletteCache.put(fixed, theme);
+            }
+            return theme;
+        }
         Integer seed = seedCache.get(pkg);
         if (seed == null) {
             seed = Palette.seedFrom(art);
@@ -1046,6 +1056,12 @@ public class HomeActivity extends Activity {
         colorAnimator.start();
         nav.setPalette(next);
         styleNowPlaying();
+    }
+
+    /** After the color theme changed: the fixed palette now, or the focused app's colors again. */
+    private void applyColorTheme() {
+        if (prefs.colorSeed() != 0) retint(paletteFor("", null));
+        else if (pendingPkg != null) applyFocus(pendingPkg, pendingLabel, pendingArt);
     }
 
     private Intent launchIntent(String pkg) {
@@ -1168,6 +1184,12 @@ public class HomeActivity extends Activity {
             prefs.setColumns(next > Prefs.MAX_COLUMNS ? Prefs.MIN_COLUMNS : next);
             showLauncherSettings();
         });
+        items.add("Colors: " + Prefs.COLOR_NAMES[prefs.colorTheme()]);
+        actions.add(() -> {
+            prefs.setColorTheme((prefs.colorTheme() + 1) % Prefs.COLOR_NAMES.length);
+            applyColorTheme();
+            showLauncherSettings();
+        });
         items.add("Clock: " + new String[]{"Follow TV", "12-hour", "24-hour"}[prefs.clockMode()]);
         actions.add(() -> {
             prefs.setClockMode((prefs.clockMode() + 1) % 3);
@@ -1215,6 +1237,7 @@ public class HomeActivity extends Activity {
                 .setMessage("Animations, apps per row, clock, weather, photos, the Continue tab and the start app go back to how they came. Pinned and hidden apps stay.")
                 .setPositiveButton("Reset", (d, w) -> {
                     prefs.resetSettings();
+                    applyColorTheme();
                     drifting = true;
                     shape.removeCallbacks(drift);
                     if (foreground) {
@@ -1362,12 +1385,13 @@ public class HomeActivity extends Activity {
     private LinearLayout continueRow;
     private TextView continueMessage;
     private TextView continueAllow;
+    private TextView continueTitle;
     private boolean showingContinue;
-    private static final int POSTER_DP = 260;
+    private static final int POSTER_DP = 230;
     private static final int REQUEST_WATCH_NEXT = 7;
     private final Map<String, Bitmap> posters = new java.util.LinkedHashMap<String, Bitmap>(16, 0.75f, true) {
         @Override protected boolean removeEldestEntry(Map.Entry<String, Bitmap> eldest) {
-            return size() > 24;
+            return size() > 12;
         }
     };
 
@@ -1379,9 +1403,9 @@ public class HomeActivity extends Activity {
         LinearLayout page = new LinearLayout(this);
         page.setOrientation(LinearLayout.VERTICAL);
         page.setClipChildren(false);
-        TextView title = text("Continue watching", 34, palette.onSurface, 760);
-        title.setPadding(dp(4), dp(28), 0, dp(8));
-        page.addView(title);
+        continueTitle = text("Continue watching", 34, palette.onSurface, 760);
+        continueTitle.setPadding(dp(4), dp(28), 0, dp(8));
+        page.addView(continueTitle);
         continueMessage = text("", 18, palette.onSurfaceVariant, 500);
         continueMessage.setPadding(dp(4), dp(12), dp(40), dp(12));
         continueMessage.setVisibility(View.GONE);
@@ -1402,6 +1426,7 @@ public class HomeActivity extends Activity {
         continueAllow.setOnClickListener(v -> requestPermissions(new String[]{WatchNext.PERMISSION}, REQUEST_WATCH_NEXT));
         continueAllow.setVisibility(View.GONE);
         page.addView(continueAllow, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        page.addView(buildHero(), new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(150)));
         HorizontalScrollView scroller = new HorizontalScrollView(this);
         scroller.setHorizontalScrollBarEnabled(false);
         scroller.setClipChildren(false);
@@ -1447,14 +1472,19 @@ public class HomeActivity extends Activity {
 
     private void showContinueRow(List<WatchNext.Item> list, boolean granted) {
         continueRow.removeAllViews();
-        for (WatchNext.Item item : list) {
-            if (launchIntent(item.pkg) == null) continue;      // uninstalled since
-            View card = posterCard(item);
+        List<WatchNext.Item> shown = new ArrayList<>();
+        for (WatchNext.Item item : list) if (launchIntent(item.pkg) != null) shown.add(item);   // not uninstalled since
+        heroItem = null;
+        for (int i = 0; i < shown.size(); i++) {
+            WatchNext.Item item = shown.get(i);
+            View card = posterCard(item, i, shown.size());
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
             if (continueRow.getChildCount() > 0) lp.setMarginStart(dp(GAP));
             continueRow.addView(card, lp);
         }
         boolean empty = continueRow.getChildCount() == 0;
+        heroBox.setVisibility(empty ? View.GONE : View.VISIBLE);
+        continueTitle.setVisibility(empty ? View.VISIBLE : View.GONE);
         String offered = "Allow access to also list what your apps offer under Continue watching.";
         if (empty) {
             continueMessage.setText("Nothing to continue yet. What you play on this TV shows up here"
@@ -1505,8 +1535,111 @@ public class HomeActivity extends Activity {
         prefs.addRecent(it);
     }
 
+    // The focused item, large: its poster as a backdrop under a scrim, the title, where you were, and which of the row it is.
+    private FrameLayout heroBox;
+    private ImageView heroImage;
+    private TextView heroKicker, heroTitle, heroSub;
+    private LinearLayout heroDots;
+    private WatchNext.Item heroItem;
+    private int heroIndex, heroCount;
+
+    private View buildHero() {
+        heroBox = new FrameLayout(this);
+        GradientDrawable shape = new GradientDrawable();
+        shape.setCornerRadius(dp(Focus.CARD));
+        shape.setColor(palette.containerHigh);
+        heroBox.setBackground(shape);
+        heroBox.setClipToOutline(true);
+        heroBox.setVisibility(View.GONE);
+        heroImage = new ImageView(this);
+        heroImage.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        heroBox.addView(heroImage, match());
+        View scrim = new View(this);
+        scrim.setBackground(new GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT,
+                new int[]{withAlpha(palette.surface, 0xF2), withAlpha(palette.surface, 0xB0), withAlpha(palette.surface, 0x20)}));
+        heroBox.addView(scrim, match());
+        LinearLayout words = new LinearLayout(this);
+        words.setOrientation(LinearLayout.VERTICAL);
+        words.setGravity(Gravity.CENTER_VERTICAL);
+        words.setPadding(dp(28), dp(12), dp(28), dp(12));
+        heroKicker = text("Continue watching", 13, palette.primary, 650);
+        heroTitle = text("", 26, palette.onSurface, 700);
+        heroTitle.setSingleLine(true);
+        heroTitle.setEllipsize(TextUtils.TruncateAt.END);
+        heroSub = text("", 15, palette.onSurfaceVariant, 500);
+        heroSub.setSingleLine(true);
+        heroSub.setEllipsize(TextUtils.TruncateAt.END);
+        words.addView(heroKicker);
+        words.addView(heroTitle);
+        words.addView(heroSub);
+        heroBox.addView(words, new FrameLayout.LayoutParams(dp(560), ViewGroup.LayoutParams.MATCH_PARENT, Gravity.START));
+        heroDots = new LinearLayout(this);
+        heroDots.setOrientation(LinearLayout.HORIZONTAL);
+        FrameLayout.LayoutParams dl = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.END | Gravity.BOTTOM);
+        dl.setMargins(0, 0, dp(24), dp(16));
+        heroBox.addView(heroDots, dl);
+        return heroBox;
+    }
+
+    private Drawable appArtFor(String pkg) {
+        try {
+            return pm.getApplicationIcon(pkg);
+        } catch (PackageManager.NameNotFoundException e) {
+            return null;
+        }
+    }
+
+    private static String minutes(long ms) {
+        long s = ms / 1000;
+        return s >= 3600 ? String.format(Locale.US, "%d:%02d:%02d", s / 3600, s / 60 % 60, s % 60) : String.format(Locale.US, "%d:%02d", s / 60, s % 60);
+    }
+
+    private void showHero(WatchNext.Item item, int index, int count, Drawable icon) {
+        boolean sameItem = heroItem == item;
+        heroItem = item;
+        heroIndex = index;
+        heroCount = count;
+        heroTitle.setText(item.title);
+        StringBuilder sub = new StringBuilder(String.valueOf(appLabel(item.pkg)));
+        if (item.subtitle != null && !item.subtitle.isEmpty()) sub.append(" · ").append(item.subtitle);
+        if (item.position > 0) {
+            sub.append("  ·  ").append(minutes(item.position));
+            if (item.duration > 0) sub.append(" / ").append(minutes(item.duration));
+        }
+        heroSub.setText(sub);
+        Bitmap poster = item.poster != null ? posters.get(item.poster) : null;
+        if (poster != null) {
+            heroImage.setScaleType(ImageView.ScaleType.CENTER_CROP);
+            heroImage.setPadding(0, 0, 0, 0);
+            heroImage.setImageBitmap(poster);
+        } else {
+            heroImage.setScaleType(ImageView.ScaleType.FIT_CENTER);
+            heroImage.setPadding(dp(560), dp(24), dp(48), dp(24));
+            heroImage.setImageDrawable(icon);
+        }
+        if (!sameItem) {
+            heroImage.setAlpha(0f);
+            heroImage.animate().alpha(1f).setInterpolator(Motion.FAST_EFFECTS).setDuration(Motion.FAST_EFFECTS_MS).start();
+        }
+        if (heroDots.getChildCount() != count) {
+            heroDots.removeAllViews();
+            for (int i = 0; i < count; i++) {
+                View dot = new View(this);
+                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(8), dp(8));
+                if (i > 0) lp.setMarginStart(dp(6));
+                heroDots.addView(dot, lp);
+            }
+        }
+        for (int i = 0; i < heroDots.getChildCount(); i++) {
+            GradientDrawable d = new GradientDrawable();
+            d.setShape(GradientDrawable.OVAL);
+            d.setColor(i == index ? palette.primary : withAlpha(palette.onSurfaceVariant, 0x80));
+            heroDots.getChildAt(i).setBackground(d);
+        }
+    }
+
     /** A 16:9 poster with a thin progress line, the title and the app's name under it. */
-    private View posterCard(WatchNext.Item item) {
+    private View posterCard(WatchNext.Item item, int index, int count) {
         int w = dp(POSTER_DP);
         int h = w * 9 / 16;
         int radius = dp(Focus.MEDIA);
@@ -1541,10 +1674,11 @@ public class HomeActivity extends Activity {
             if (known != null) {
                 image.setImageBitmap(known);
             } else {
-                Photos.image(handler, getContentResolver(), item.poster, w, bitmap -> {
+                Photos.image(handler, getContentResolver(), item.poster, dp(380), bitmap -> {
                     if (bitmap == null) return;
                     posters.put(item.poster, bitmap);
                     image.setImageBitmap(bitmap);
+                    if (heroItem == item) showHero(item, heroIndex, heroCount, appArtFor(item.pkg));
                 });
             }
         }
@@ -1584,6 +1718,7 @@ public class HomeActivity extends Activity {
             ring.setCornerRadius((focused ? radius * 0.62f : radius) + dp(RING));
             fadeRing(ring, focused);
             if (focused) {
+                showHero(item, index, count, fallback);
                 Drawable art = image.getDrawable() != null ? image.getDrawable() : fallback;
                 if (art != null) onTileFocused("watch:" + item.pkg + "|" + item.title, item.title, art);
             }

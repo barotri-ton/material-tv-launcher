@@ -64,6 +64,23 @@ final class Prefs {
         sp.edit().putBoolean("photos", on).apply();
     }
 
+    /** Fixed color themes next to "follow the focused app" (index 0); seeds are the same kind the banners give. */
+    static final String[] COLOR_NAMES = {"Follow app", "Ocean", "Forest", "Sunset", "Rose", "Violet", "Graphite"};
+    private static final int[] COLOR_SEEDS = {0, 0xFF1976D2, 0xFF2E7D32, 0xFFEF6C00, 0xFFD81B60, 0xFF6750A4, 0xFF607D8B};
+
+    int colorTheme() {
+        return Math.max(0, Math.min(COLOR_NAMES.length - 1, sp.getInt("color_theme", 0)));
+    }
+
+    void setColorTheme(int index) {
+        sp.edit().putInt("color_theme", index).apply();
+    }
+
+    /** The fixed seed color, or 0 when colors follow the focused app. */
+    int colorSeed() {
+        return COLOR_SEEDS[colorTheme()];
+    }
+
     /** The Continue tab: what apps offer under Watch Next. */
     boolean continueOn() {
         return sp.getBoolean("continue", false);
@@ -175,7 +192,7 @@ final class Prefs {
     /** Every choice back to how it came; pinned and hidden apps stay. */
     void resetSettings() {
         SharedPreferences.Editor e = sp.edit();
-        for (String key : new String[]{"reduced_motion", "columns", "clock_mode", "start_app", "fahrenheit", "photos", "continue", "recent", "weather_city", "weather_lat",
+        for (String key : new String[]{"reduced_motion", "columns", "clock_mode", "start_app", "fahrenheit", "photos", "continue", "recent", "color_theme", "weather_city", "weather_lat",
                 "weather_lon", "weather_text", "weather_at"}) e.remove(key);
         e.apply();
     }

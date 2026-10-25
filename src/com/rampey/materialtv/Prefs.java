@@ -64,6 +64,42 @@ final class Prefs {
         sp.edit().putBoolean("photos", on).apply();
     }
 
+    // ---- folders (groups of apps on the Apps page) ----
+
+    /** Folder name -> package names, in the order the folders were made. */
+    java.util.Map<String, List<String>> folders() {
+        java.util.Map<String, List<String>> out = new java.util.LinkedHashMap<>();
+        try {
+            org.json.JSONObject all = new org.json.JSONObject(foldersRaw());
+            java.util.Iterator<String> names = all.keys();
+            while (names.hasNext()) {
+                String name = names.next();
+                org.json.JSONArray arr = all.getJSONArray(name);
+                List<String> pkgs = new ArrayList<>();
+                for (int i = 0; i < arr.length(); i++) pkgs.add(arr.getString(i));
+                out.put(name, pkgs);
+            }
+        } catch (org.json.JSONException ignored) {
+        }
+        return out;
+    }
+
+    String foldersRaw() {
+        return sp.getString("folders", "{}");
+    }
+
+    /** Empty folders are dropped. */
+    void setFolders(java.util.Map<String, List<String>> folders) {
+        org.json.JSONObject all = new org.json.JSONObject();
+        try {
+            for (java.util.Map.Entry<String, List<String>> e : folders.entrySet()) {
+                if (!e.getValue().isEmpty()) all.put(e.getKey(), new org.json.JSONArray(e.getValue()));
+            }
+        } catch (org.json.JSONException ignored) {
+        }
+        sp.edit().putString("folders", all.toString()).apply();
+    }
+
     /** Fixed color themes next to "follow the focused app" (index 0); seeds are the same kind the banners give. */
     static final String[] COLOR_NAMES = {"Follow app", "Ocean", "Forest", "Sunset", "Rose", "Violet", "Graphite"};
     private static final int[] COLOR_SEEDS = {0, 0xFF1976D2, 0xFF2E7D32, 0xFFEF6C00, 0xFFD81B60, 0xFF6750A4, 0xFF607D8B};

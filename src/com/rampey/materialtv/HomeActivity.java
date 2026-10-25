@@ -4,6 +4,7 @@ import android.animation.ArgbEvaluator;
 import android.animation.ObjectAnimator;
 import android.animation.ValueAnimator;
 import android.app.Activity;
+import android.app.Dialog;
 import android.app.AlertDialog;
 import android.app.PendingIntent;
 import android.content.ActivityNotFoundException;
@@ -17,6 +18,7 @@ import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Typeface;
+import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
 import android.media.MediaMetadata;
@@ -37,6 +39,8 @@ import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.Window;
+import android.view.WindowManager;
 import android.view.animation.PathInterpolator;
 import android.view.inputmethod.EditorInfo;
 import android.widget.EditText;
@@ -319,6 +323,8 @@ public class HomeActivity extends Activity {
         // The media session stays watched (it only updates fields, never views) so the card remembers what played
         // while another app had the screen; it is let go in onDestroy.
         foreground = false;
+        if (folderDialog != null) folderDialog.dismiss();
+        if (quickDialog != null) quickDialog.dismiss();
         handler.removeCallbacks(refreshWeather);
         handler.removeCallbacks(checkResumed);
         android.media.tv.TvInputManager inputs = getSystemService(android.media.tv.TvInputManager.class);
@@ -442,7 +448,7 @@ public class HomeActivity extends Activity {
                     if (index == 0) showHome();
                     else if (index == 1) showApps();
                     else if (index == 2) showContinue();
-                    else launch(new Intent(Settings.ACTION_SETTINGS));
+                    else showQuickPanel();
                 });
         nav.select(0);
         applyContinueTab();
@@ -689,9 +695,9 @@ public class HomeActivity extends Activity {
                 found.add(info);
             }
         }
-        // The grid is kept between visits; rebuild only when the set of installed apps changed.
+        // The grid is kept between visits; rebuild only when the set of installed apps or the folders changed.
         appsGrid.setColumnCount(prefs.columns());
-        String key = prefs.columns() + ":" + TextUtils.join(",", seen);
+        String key = prefs.columns() + ":" + TextUtils.join(",", seen) + "|" + prefs.foldersRaw();
         if (key.equals(appsKey) && appsGrid.getChildCount() > 0) return;
         appsKey = key;
         appsGrid.removeAllViews();
@@ -704,10 +710,26 @@ public class HomeActivity extends Activity {
         float screenDp = getResources().getDisplayMetrics().widthPixels / getResources().getDisplayMetrics().density;
         float inner = screenDp - 2 * SIDE - cols * (2 * RING + 2 * APP_MARGIN);
         int tileDp = (int) Math.min(170, inner / cols);
+        // Folders first, then the apps that are in none.
+        Set<String> inFolders = new java.util.HashSet<>();
+        Map<String, List<String>> folders = prefs.folders();
+        List<String> names = new ArrayList<>(folders.keySet());
+        Collections.sort(names, String::compareToIgnoreCase);
+        for (String name : names) {
+            List<String> pkgs = new ArrayList<>();
+            for (String pkg : folders.get(name)) {
+                inFolders.add(pkg);
+                if (!hidden.contains(pkg) && launchIntent(pkg) != null) pkgs.add(pkg);
+            }
+            if (pkgs.isEmpty()) continue;
+            GridLayout.LayoutParams lp = new GridLayout.LayoutParams();
+            lp.setMargins(dp(APP_MARGIN), dp(10), dp(APP_MARGIN), dp(16));
+            appsGrid.addView(folderTile(name, pkgs, tileDp), lp);
+        }
         for (ResolveInfo info : found) {
             String pkg = info.activityInfo.packageName;
             Intent intent = launchIntent(pkg);
-            if (intent == null) continue;
+            if (intent == null || inFolders.contains(pkg)) continue;
             View tile = tile(pkg, intent, tileDp, false);
             GridLayout.LayoutParams lp = new GridLayout.LayoutParams();
             lp.setMargins(dp(APP_MARGIN), dp(10), dp(APP_MARGIN), dp(16));
@@ -1115,6 +1137,20 @@ public class HomeActivity extends Activity {
                 });
             }
         }
+        String inFolder = folderOf(pkg);
+        if (inFolder != null) {
+            items.add("Remove from folder (" + inFolder + ")");
+            actions.add(() -> {
+                Map<String, List<String>> folders = prefs.folders();
+                folders.get(inFolder).remove(pkg);
+                prefs.setFolders(folders);
+                if (folderDialog != null) folderDialog.dismiss();
+                refreshApps();
+            });
+        } else {
+            items.add("Add to folder");
+            actions.add(() -> chooseFolder(pkg));
+        }
         items.add("Hide app");
         actions.add(() -> {
             Set<String> hidden = prefs.hidden();
@@ -1229,8 +1265,6 @@ public class HomeActivity extends Activity {
             prefs.setPhotosOn(!prefs.photosOn());
             showLauncherSettings();
         });
-        items.add("System shortcuts");
-        actions.add(this::showShortcuts);
         items.add("Reset launcher settings");
         actions.add(() -> new AlertDialog.Builder(this)
                 .setTitle("Reset launcher settings?")
@@ -1266,17 +1300,6 @@ public class HomeActivity extends Activity {
         } catch (PackageManager.NameNotFoundException e) {
             return "?";
         }
-    }
-
-    /** The TV's own pages that matter most on a projector or TV, one press away. */
-    private void showShortcuts() {
-        String[] names = {"Wi-Fi", "Display", "Sound", "Screensaver", "Choose default home"};
-        String[] actions = {Settings.ACTION_WIFI_SETTINGS, Settings.ACTION_DISPLAY_SETTINGS, Settings.ACTION_SOUND_SETTINGS,
-                "android.settings.DREAM_SETTINGS", Settings.ACTION_HOME_SETTINGS};
-        new AlertDialog.Builder(this)
-                .setTitle("System shortcuts")
-                .setItems(names, (d, which) -> launch(new Intent(actions[which])))
-                .show();
     }
 
     private void chooseStartApp() {
@@ -1751,6 +1774,300 @@ public class HomeActivity extends Activity {
         }
         if (intent == null || pm.resolveActivity(intent, 0) == null) intent = launchIntent(item.pkg);
         if (intent != null) launch(intent);
+    }
+
+    // ---- quick panel ----
+
+    private Dialog quickDialog;
+
+    /** The Settings tab: the launcher's preferences and the TV's own pages, as tiles over Home. */
+    private void showQuickPanel() {
+        Dialog d = new Dialog(this);
+        d.requestWindowFeature(Window.FEATURE_NO_TITLE);
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(dp(14), dp(10), dp(14), dp(14));
+        GradientDrawable cardShape = new GradientDrawable();
+        cardShape.setCornerRadius(dp(Focus.CARD));
+        cardShape.setColor(palette.containerHigh);
+        card.setBackground(cardShape);
+        TextView head = text("Quick panel", 14, palette.onSurfaceVariant, 600);
+        head.setPadding(dp(8), dp(4), 0, dp(8));
+        card.addView(head);
+        GridLayout grid = new GridLayout(this);
+        grid.setColumnCount(3);
+        Object[][] entries = {
+                {R.drawable.ic_tune, "Preferences", (Runnable) this::showLauncherSettings},
+                {R.drawable.ic_wifi, "Wi-Fi", (Runnable) () -> launch(new Intent(Settings.ACTION_WIFI_SETTINGS))},
+                {R.drawable.ic_display, "Display", (Runnable) () -> launch(new Intent(Settings.ACTION_DISPLAY_SETTINGS))},
+                {R.drawable.ic_sound, "Sound", (Runnable) () -> launch(new Intent(Settings.ACTION_SOUND_SETTINGS))},
+                {R.drawable.ic_moon, "Screen saver", (Runnable) () -> launch(new Intent("android.settings.DREAM_SETTINGS"))},
+                {R.drawable.ic_home, "Default home", (Runnable) () -> launch(new Intent(Settings.ACTION_HOME_SETTINGS))},
+                {R.drawable.ic_settings, "TV settings", (Runnable) () -> launch(new Intent(Settings.ACTION_SETTINGS))},
+        };
+        View first = null;
+        for (Object[] e : entries) {
+            View tile = quickTile((Integer) e[0], (String) e[1], (Runnable) e[2], d);
+            GridLayout.LayoutParams lp = new GridLayout.LayoutParams();
+            lp.width = dp(112);
+            lp.height = dp(86);
+            lp.setMargins(dp(4), dp(4), dp(4), dp(4));
+            grid.addView(tile, lp);
+            if (first == null) first = tile;
+        }
+        card.addView(grid);
+        d.setContentView(card);
+        Window w = d.getWindow();
+        if (w != null) {
+            w.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+            WindowManager.LayoutParams p = w.getAttributes();
+            p.gravity = Gravity.TOP | Gravity.END;
+            p.x = dp(SIDE);
+            p.y = dp(96);
+            p.dimAmount = 0.35f;
+            w.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
+            w.setAttributes(p);
+        }
+        quickDialog = d;
+        d.setOnDismissListener(x -> quickDialog = null);
+        d.show();
+        if (first != null) first.requestFocus();
+    }
+
+    private View quickTile(int icon, String label, Runnable action, Dialog dialog) {
+        LinearLayout tile = new LinearLayout(this);
+        tile.setOrientation(LinearLayout.VERTICAL);
+        tile.setGravity(Gravity.CENTER);
+        tile.setFocusable(true);
+        tile.setClickable(true);
+        GradientDrawable shape = new GradientDrawable();
+        shape.setCornerRadius(dp(Focus.MEDIA));
+        shape.setColor(palette.container);
+        tile.setBackground(shape);
+        ImageView image = new ImageView(this);
+        image.setImageResource(icon);
+        image.setImageTintList(ColorStateList.valueOf(palette.onSurface));
+        tile.addView(image, new LinearLayout.LayoutParams(dp(26), dp(26)));
+        TextView name = text(label, 13, palette.onSurface, 560);
+        name.setGravity(Gravity.CENTER);
+        name.setSingleLine(true);
+        name.setPadding(dp(4), dp(8), dp(4), 0);
+        tile.addView(name);
+        tile.setOnFocusChangeListener((v, focused) -> {
+            shape.setColor(focused ? palette.inverseSurface : palette.container);
+            image.setImageTintList(ColorStateList.valueOf(focused ? palette.inverseOnSurface : palette.onSurface));
+            name.setTextColor(focused ? palette.inverseOnSurface : palette.onSurface);
+            v.animate().scaleX(focused ? 1.05f : 1f).scaleY(focused ? 1.05f : 1f)
+                    .setInterpolator(Motion.FAST_SPATIAL).setDuration(Motion.FAST_SPATIAL_MS).start();
+        });
+        tile.setOnClickListener(v -> {
+            dialog.dismiss();
+            action.run();
+        });
+        return tile;
+    }
+
+    // ---- folders ----
+
+    private Dialog folderDialog;
+
+    private String folderOf(String pkg) {
+        for (Map.Entry<String, List<String>> e : prefs.folders().entrySet()) {
+            if (e.getValue().contains(pkg)) return e.getKey();
+        }
+        return null;
+    }
+
+    private void addToFolder(String name, String pkg) {
+        Map<String, List<String>> folders = prefs.folders();
+        List<String> list = folders.get(name);
+        if (list == null) {
+            list = new ArrayList<>();
+            folders.put(name, list);
+        }
+        if (!list.contains(pkg)) list.add(pkg);
+        prefs.setFolders(folders);
+        refreshApps();
+    }
+
+    private void chooseFolder(String pkg) {
+        List<String> names = new ArrayList<>(prefs.folders().keySet());
+        List<String> items = new ArrayList<>(names);
+        items.add("New folder");
+        new AlertDialog.Builder(this)
+                .setTitle("Add to folder")
+                .setItems(items.toArray(new String[0]), (d, which) -> {
+                    if (which < names.size()) addToFolder(names.get(which), pkg);
+                    else askName("New folder", "", name -> addToFolder(name, pkg));
+                })
+                .show();
+    }
+
+    private void askName(String title, String initial, java.util.function.Consumer<String> done) {
+        EditText input = new EditText(this);
+        input.setSingleLine(true);
+        input.setText(initial);
+        input.setSelection(initial.length());
+        input.setHint("Folder name");
+        new AlertDialog.Builder(this)
+                .setTitle(title)
+                .setView(input)
+                .setPositiveButton("OK", (d, w) -> {
+                    String name = input.getText().toString().trim().replace("\"", "");
+                    if (!name.isEmpty()) done.accept(name);
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    /** Hold OK on a folder: rename it, or delete it (its apps go back to the grid). */
+    private void showFolderMenu(String name) {
+        new AlertDialog.Builder(this)
+                .setTitle(name)
+                .setItems(new String[]{"Rename folder", "Delete folder"}, (d, which) -> {
+                    Map<String, List<String>> folders = prefs.folders();
+                    if (which == 0) {
+                        askName("Rename folder", name, newName -> {
+                            Map<String, List<String>> all = prefs.folders();
+                            List<String> apps = all.remove(name);
+                            if (apps == null) return;
+                            List<String> merged = all.get(newName);
+                            if (merged != null) apps.addAll(merged);
+                            all.put(newName, apps);
+                            prefs.setFolders(all);
+                            refreshApps();
+                        });
+                    } else {
+                        folders.remove(name);
+                        prefs.setFolders(folders);
+                        refreshApps();
+                    }
+                })
+                .show();
+    }
+
+    /** A folder on the Apps page: up to four of its apps' icons on a tonal card, the name underneath. */
+    private View folderTile(String name, List<String> pkgs, int widthDp) {
+        int w = dp(widthDp);
+        int h = w * 9 / 16;
+        int radius = dp(Focus.MEDIA);
+        LinearLayout holder = new LinearLayout(this);
+        holder.setOrientation(LinearLayout.VERTICAL);
+        holder.setClipChildren(false);
+        holder.setGravity(Gravity.CENTER_HORIZONTAL);
+
+        FrameLayout card = new FrameLayout(this);
+        card.setFocusable(true);
+        card.setClickable(true);
+        GradientDrawable cardShape = new GradientDrawable();
+        cardShape.setCornerRadius(radius);
+        cardShape.setColor(palette.containerHigh);
+        card.setBackground(cardShape);
+        card.setClipToOutline(true);
+        GridLayout minis = new GridLayout(this);
+        minis.setColumnCount(2);
+        Drawable firstIcon = null;
+        int shown = 0;
+        for (String pkg : pkgs) {
+            if (shown >= 4) break;
+            Drawable icon = appArtFor(pkg);
+            if (icon == null) continue;
+            if (firstIcon == null) firstIcon = icon;
+            ImageView mini = new ImageView(this);
+            mini.setImageDrawable(icon);
+            GridLayout.LayoutParams lp = new GridLayout.LayoutParams();
+            lp.width = Math.round(h * 0.36f);
+            lp.height = Math.round(h * 0.36f);
+            lp.setMargins(dp(3), dp(3), dp(3), dp(3));
+            minis.addView(mini, lp);
+            shown++;
+        }
+        card.addView(minis, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER));
+        card.setContentDescription(name);
+
+        GradientDrawable ring = new GradientDrawable();
+        ring.setCornerRadius(radius + dp(RING));
+        ring.setColor(Color.TRANSPARENT);
+        FrameLayout ringFrame = new FrameLayout(this);
+        ringFrame.setClipChildren(false);
+        ringFrame.setPadding(dp(RING), dp(RING), dp(RING), dp(RING));
+        ringFrame.setBackground(ring);
+        ringFrame.addView(card, new FrameLayout.LayoutParams(w, h));
+        card.setOnClickListener(v -> showFolder(name));
+        card.setOnLongClickListener(v -> {
+            showFolderMenu(name);
+            return true;
+        });
+        final Drawable art = firstIcon;
+        card.setOnFocusChangeListener((v, focused) -> {
+            float scale = focused ? 1.10f : 1f;
+            ringFrame.animate().scaleX(scale).scaleY(scale)
+                    .setInterpolator(Motion.FAST_SPATIAL).setDuration(Motion.FAST_SPATIAL_MS).start();
+            card.setOutlineSpotShadowColor(palette.primary);
+            card.setOutlineAmbientShadowColor(palette.primary);
+            card.animate().translationZ(focused ? dp(14) : 0)
+                    .setInterpolator(Motion.FAST_EFFECTS).setDuration(Motion.DEFAULT_EFFECTS_MS).start();
+            ObjectAnimator corners = ObjectAnimator.ofFloat(cardShape, "cornerRadius", cardShape.getCornerRadius(), focused ? radius * 0.62f : radius)
+                    .setDuration(Motion.FAST_SPATIAL_MS);
+            corners.setInterpolator(Motion.FAST_SPATIAL);
+            corners.start();
+            ring.setCornerRadius((focused ? radius * 0.62f : radius) + dp(RING));
+            fadeRing(ring, focused);
+            if (focused && art != null) onTileFocused("folder:" + name, name, art);
+        });
+        holder.addView(ringFrame, new LinearLayout.LayoutParams(w + dp(2 * RING), h + dp(2 * RING)));
+        TextView caption = text(name + "  ·  " + pkgs.size(), 14, palette.onSurfaceVariant, 560);
+        caption.setGravity(Gravity.CENTER_HORIZONTAL);
+        caption.setSingleLine(true);
+        caption.setEllipsize(TextUtils.TruncateAt.END);
+        caption.setPadding(0, dp(10), 0, 0);
+        holder.addView(caption, new LinearLayout.LayoutParams(w + dp(2 * RING), ViewGroup.LayoutParams.WRAP_CONTENT));
+        return holder;
+    }
+
+    /** The folder's apps in a panel over the Apps page. */
+    private void showFolder(String name) {
+        List<String> pkgs = new ArrayList<>();
+        Set<String> hidden = prefs.hidden();
+        List<String> all = prefs.folders().get(name);
+        if (all != null) for (String pkg : all) if (!hidden.contains(pkg) && launchIntent(pkg) != null) pkgs.add(pkg);
+        if (pkgs.isEmpty()) return;
+        Dialog d = new Dialog(this);
+        d.requestWindowFeature(Window.FEATURE_NO_TITLE);
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(28), dp(20), dp(28), dp(20));
+        box.setClipChildren(false);
+        GradientDrawable shape = new GradientDrawable();
+        shape.setCornerRadius(dp(Focus.CARD));
+        shape.setColor(palette.container);
+        box.setBackground(shape);
+        TextView title = text(name, 22, palette.onSurface, 700);
+        title.setPadding(dp(4), 0, 0, dp(6));
+        box.addView(title);
+        GridLayout grid = new GridLayout(this);
+        grid.setColumnCount(Math.min(4, pkgs.size()));
+        grid.setClipChildren(false);
+        View first = null;
+        for (String pkg : pkgs) {
+            View tile = tile(pkg, launchIntent(pkg), 140, false);
+            GridLayout.LayoutParams lp = new GridLayout.LayoutParams();
+            lp.setMargins(dp(8), dp(8), dp(8), dp(12));
+            grid.addView(tile, lp);
+            if (first == null) first = tile;
+        }
+        box.addView(grid);
+        d.setContentView(box);
+        Window w = d.getWindow();
+        if (w != null) {
+            w.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+            w.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
+            w.setDimAmount(0.45f);
+        }
+        folderDialog = d;
+        d.setOnDismissListener(x -> folderDialog = null);
+        d.show();
+        if (first != null) first.requestFocus();
     }
 
     // ---- pages ----

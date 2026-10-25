@@ -4,6 +4,7 @@ import android.animation.ArgbEvaluator;
 import android.animation.ObjectAnimator;
 import android.animation.ValueAnimator;
 import android.app.Activity;
+import android.app.Dialog;
 import android.app.AlertDialog;
 import android.app.PendingIntent;
 import android.content.ActivityNotFoundException;
@@ -17,6 +18,7 @@ import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Typeface;
+import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
 import android.media.MediaMetadata;
@@ -37,6 +39,8 @@ import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.Window;
+import android.view.WindowManager;
 import android.view.animation.PathInterpolator;
 import android.view.inputmethod.EditorInfo;
 import android.widget.EditText;
@@ -256,7 +260,7 @@ public class HomeActivity extends Activity {
             } else if (!time.contentEquals(clock.getText())) {
                 changeClock(time);
             }
-            date.setText(new SimpleDateFormat("EEEE, MMMM d", Locale.getDefault()).format(now));
+            date.setText(DateText.format(now, Locale.getDefault()));
             handler.postDelayed(this, 15_000);
         }
     };
@@ -265,6 +269,7 @@ public class HomeActivity extends Activity {
         super.onCreate(state);
         pm = getPackageManager();
         prefs = new Prefs(this);
+        if (prefs.colorSeed() != 0) palette = Palette.of(prefs.colorSeed());
         setContentView(buildRoot());
         openStartApp();
     }
@@ -318,6 +323,8 @@ public class HomeActivity extends Activity {
         // The media session stays watched (it only updates fields, never views) so the card remembers what played
         // while another app had the screen; it is let go in onDestroy.
         foreground = false;
+        if (folderDialog != null) folderDialog.dismiss();
+        if (quickDialog != null) quickDialog.dismiss();
         handler.removeCallbacks(refreshWeather);
         handler.removeCallbacks(checkResumed);
         android.media.tv.TvInputManager inputs = getSystemService(android.media.tv.TvInputManager.class);
@@ -356,6 +363,17 @@ public class HomeActivity extends Activity {
         FrameLayout root = new FrameLayout(this);
         backdrop = new GradientDrawable(GradientDrawable.Orientation.TL_BR, new int[]{palette.surfaceBright, palette.surface});
         root.setBackground(backdrop);
+
+        // An optional photo (Launcher settings -> Wallpaper) under a scrim in the palette's surface color.
+        wallpaperView = new ImageView(this);
+        wallpaperView.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        wallpaperView.setVisibility(View.GONE);
+        root.addView(wallpaperView, match());
+        wallpaperScrim = new View(this);
+        wallpaperScrim.setBackgroundColor(withAlpha(palette.surface, WALLPAPER_DIM));
+        wallpaperScrim.setVisibility(View.GONE);
+        root.addView(wallpaperScrim, match());
+        applyWallpaper();
 
         // One Expressive "cookie" shape behind everything, drifting slowly and turning a little more when focus
         // moves. It sits on its own GPU layer, so each step only moves the layer; nothing is redrawn.
@@ -441,7 +459,7 @@ public class HomeActivity extends Activity {
                     if (index == 0) showHome();
                     else if (index == 1) showApps();
                     else if (index == 2) showContinue();
-                    else launch(new Intent(Settings.ACTION_SETTINGS));
+                    else showQuickPanel();
                 });
         nav.select(0);
         applyContinueTab();
@@ -688,9 +706,9 @@ public class HomeActivity extends Activity {
                 found.add(info);
             }
         }
-        // The grid is kept between visits; rebuild only when the set of installed apps changed.
+        // The grid is kept between visits; rebuild only when the set of installed apps or the folders changed.
         appsGrid.setColumnCount(prefs.columns());
-        String key = prefs.columns() + ":" + TextUtils.join(",", seen);
+        String key = prefs.columns() + ":" + TextUtils.join(",", seen) + "|" + prefs.foldersRaw();
         if (key.equals(appsKey) && appsGrid.getChildCount() > 0) return;
         appsKey = key;
         appsGrid.removeAllViews();
@@ -703,10 +721,26 @@ public class HomeActivity extends Activity {
         float screenDp = getResources().getDisplayMetrics().widthPixels / getResources().getDisplayMetrics().density;
         float inner = screenDp - 2 * SIDE - cols * (2 * RING + 2 * APP_MARGIN);
         int tileDp = (int) Math.min(170, inner / cols);
+        // Folders first, then the apps that are in none.
+        Set<String> inFolders = new java.util.HashSet<>();
+        Map<String, List<String>> folders = prefs.folders();
+        List<String> names = new ArrayList<>(folders.keySet());
+        Collections.sort(names, String::compareToIgnoreCase);
+        for (String name : names) {
+            List<String> pkgs = new ArrayList<>();
+            for (String pkg : folders.get(name)) {
+                inFolders.add(pkg);
+                if (!hidden.contains(pkg) && launchIntent(pkg) != null) pkgs.add(pkg);
+            }
+            if (pkgs.isEmpty()) continue;
+            GridLayout.LayoutParams lp = new GridLayout.LayoutParams();
+            lp.setMargins(dp(APP_MARGIN), dp(10), dp(APP_MARGIN), dp(16));
+            appsGrid.addView(folderTile(name, pkgs, tileDp), lp);
+        }
         for (ResolveInfo info : found) {
             String pkg = info.activityInfo.packageName;
             Intent intent = launchIntent(pkg);
-            if (intent == null) continue;
+            if (intent == null || inFolders.contains(pkg)) continue;
             View tile = tile(pkg, intent, tileDp, false);
             GridLayout.LayoutParams lp = new GridLayout.LayoutParams();
             lp.setMargins(dp(APP_MARGIN), dp(10), dp(APP_MARGIN), dp(16));
@@ -957,6 +991,15 @@ public class HomeActivity extends Activity {
     }
 
     private Palette paletteFor(String pkg, Drawable art) {
+        int fixed = prefs.colorSeed();
+        if (fixed != 0) {                               // a color theme chosen in Launcher settings
+            Palette theme = paletteCache.get(fixed);
+            if (theme == null) {
+                theme = Palette.of(fixed);
+                paletteCache.put(fixed, theme);
+            }
+            return theme;
+        }
         Integer seed = seedCache.get(pkg);
         if (seed == null) {
             seed = Palette.seedFrom(art);
@@ -1040,12 +1083,55 @@ public class HomeActivity extends Activity {
             int top = (int) argb.evaluate(t, from.surfaceBright, next.surfaceBright);
             int bottom = (int) argb.evaluate(t, from.surface, next.surface);
             backdrop.setColors(new int[]{top, bottom});
+            wallpaperScrim.setBackgroundColor(withAlpha(bottom, WALLPAPER_DIM));
             cookie.setColor((int) argb.evaluate(t, from.primaryContainer, next.primaryContainer));
             dockShape.setColor(withAlpha((int) argb.evaluate(t, from.container, next.container), 0xB3));
         });
         colorAnimator.start();
         nav.setPalette(next);
         styleNowPlaying();
+    }
+
+    private ImageView wallpaperView;
+    private View wallpaperScrim;
+    private static final int WALLPAPER_DIM = 0xA6;
+
+    /** Shows the chosen bundled photo behind everything (decoded off the main thread), or just the colors. */
+    private void applyWallpaper() {
+        String file = prefs.wallpaper();
+        if (file == null) {
+            wallpaperView.setImageBitmap(null);
+            wallpaperView.setVisibility(View.GONE);
+            wallpaperScrim.setVisibility(View.GONE);
+            return;
+        }
+        Photos.asset(handler, getAssets(), Wallpapers.path(file), bitmap -> {
+            if (bitmap == null || !file.equals(prefs.wallpaper())) return;
+            wallpaperView.setImageBitmap(bitmap);
+            wallpaperView.setVisibility(View.VISIBLE);
+            wallpaperScrim.setVisibility(View.VISIBLE);
+        });
+    }
+
+    private void chooseWallpaper() {
+        List<String> files = Wallpapers.files(getAssets());
+        String[] labels = new String[files.size() + 1];
+        labels[0] = "Off (colors only)";
+        for (int i = 0; i < files.size(); i++) labels[i + 1] = Wallpapers.label(files.get(i));
+        new AlertDialog.Builder(this)
+                .setTitle("Wallpaper")
+                .setItems(labels, (d, which) -> {
+                    prefs.setWallpaper(which == 0 ? null : files.get(which - 1));
+                    applyWallpaper();
+                    showLauncherSettings();
+                })
+                .show();
+    }
+
+    /** After the color theme changed: the fixed palette now, or the focused app's colors again. */
+    private void applyColorTheme() {
+        if (prefs.colorSeed() != 0) retint(paletteFor("", null));
+        else if (pendingPkg != null) applyFocus(pendingPkg, pendingLabel, pendingArt);
     }
 
     private Intent launchIntent(String pkg) {
@@ -1098,6 +1184,20 @@ public class HomeActivity extends Activity {
                     savePinned(pinned, pkg);
                 });
             }
+        }
+        String inFolder = folderOf(pkg);
+        if (inFolder != null) {
+            items.add("Remove from folder (" + inFolder + ")");
+            actions.add(() -> {
+                Map<String, List<String>> folders = prefs.folders();
+                folders.get(inFolder).remove(pkg);
+                prefs.setFolders(folders);
+                if (folderDialog != null) folderDialog.dismiss();
+                refreshApps();
+            });
+        } else {
+            items.add("Add to folder");
+            actions.add(() -> chooseFolder(pkg));
         }
         items.add("Hide app");
         actions.add(() -> {
@@ -1168,6 +1268,15 @@ public class HomeActivity extends Activity {
             prefs.setColumns(next > Prefs.MAX_COLUMNS ? Prefs.MIN_COLUMNS : next);
             showLauncherSettings();
         });
+        String wallpaper = prefs.wallpaper();
+        items.add("Wallpaper: " + (wallpaper != null ? Wallpapers.label(wallpaper) : "Off"));
+        actions.add(this::chooseWallpaper);
+        items.add("Colors: " + Prefs.COLOR_NAMES[prefs.colorTheme()]);
+        actions.add(() -> {
+            prefs.setColorTheme((prefs.colorTheme() + 1) % Prefs.COLOR_NAMES.length);
+            applyColorTheme();
+            showLauncherSettings();
+        });
         items.add("Clock: " + new String[]{"Follow TV", "12-hour", "24-hour"}[prefs.clockMode()]);
         actions.add(() -> {
             prefs.setClockMode((prefs.clockMode() + 1) % 3);
@@ -1187,6 +1296,12 @@ public class HomeActivity extends Activity {
             }
             showLauncherSettings();
         });
+        int played = prefs.recent().size();
+        items.add("Recently played: " + played + (played > 0 ? " (select to clear)" : ""));
+        actions.add(() -> {
+            prefs.clearRecent();
+            showLauncherSettings();
+        });
         items.add("Weather: " + (prefs.weatherOn() ? prefs.weatherCity() : "Off"));
         actions.add(this::showWeatherSettings);
         items.add("Continue watching tab: " + (prefs.continueOn() ? "On" : "Off"));
@@ -1196,19 +1311,19 @@ public class HomeActivity extends Activity {
             if (!prefs.continueOn() && showingContinue) showHome();
             showLauncherSettings();
         });
-        items.add("Screensaver photos: " + (prefs.photosOn() ? "On (needs the internet)" : "Off"));
+        items.add("Screensaver photos: " + new String[]{"Off", "Online (needs the internet)", "Wallpapers (offline)"}[prefs.photosMode()]);
         actions.add(() -> {
-            prefs.setPhotosOn(!prefs.photosOn());
+            prefs.setPhotosMode((prefs.photosMode() + 1) % 3);
             showLauncherSettings();
         });
-        items.add("System shortcuts");
-        actions.add(this::showShortcuts);
         items.add("Reset launcher settings");
         actions.add(() -> new AlertDialog.Builder(this)
                 .setTitle("Reset launcher settings?")
                 .setMessage("Animations, apps per row, clock, weather, photos, the Continue tab and the start app go back to how they came. Pinned and hidden apps stay.")
                 .setPositiveButton("Reset", (d, w) -> {
                     prefs.resetSettings();
+                    applyColorTheme();
+                    applyWallpaper();
                     drifting = true;
                     shape.removeCallbacks(drift);
                     if (foreground) {
@@ -1237,17 +1352,6 @@ public class HomeActivity extends Activity {
         } catch (PackageManager.NameNotFoundException e) {
             return "?";
         }
-    }
-
-    /** The TV's own pages that matter most on a projector or TV, one press away. */
-    private void showShortcuts() {
-        String[] names = {"Wi-Fi", "Display", "Sound", "Screensaver", "Choose default home"};
-        String[] actions = {Settings.ACTION_WIFI_SETTINGS, Settings.ACTION_DISPLAY_SETTINGS, Settings.ACTION_SOUND_SETTINGS,
-                "android.settings.DREAM_SETTINGS", Settings.ACTION_HOME_SETTINGS};
-        new AlertDialog.Builder(this)
-                .setTitle("System shortcuts")
-                .setItems(names, (d, which) -> launch(new Intent(actions[which])))
-                .show();
     }
 
     private void chooseStartApp() {
@@ -1356,12 +1460,13 @@ public class HomeActivity extends Activity {
     private LinearLayout continueRow;
     private TextView continueMessage;
     private TextView continueAllow;
+    private TextView continueTitle;
     private boolean showingContinue;
-    private static final int POSTER_DP = 260;
+    private static final int POSTER_DP = 230;
     private static final int REQUEST_WATCH_NEXT = 7;
     private final Map<String, Bitmap> posters = new java.util.LinkedHashMap<String, Bitmap>(16, 0.75f, true) {
         @Override protected boolean removeEldestEntry(Map.Entry<String, Bitmap> eldest) {
-            return size() > 24;
+            return size() > 12;
         }
     };
 
@@ -1373,9 +1478,9 @@ public class HomeActivity extends Activity {
         LinearLayout page = new LinearLayout(this);
         page.setOrientation(LinearLayout.VERTICAL);
         page.setClipChildren(false);
-        TextView title = text("Continue watching", 34, palette.onSurface, 760);
-        title.setPadding(dp(4), dp(28), 0, dp(8));
-        page.addView(title);
+        continueTitle = text("Continue watching", 34, palette.onSurface, 760);
+        continueTitle.setPadding(dp(4), dp(28), 0, dp(8));
+        page.addView(continueTitle);
         continueMessage = text("", 18, palette.onSurfaceVariant, 500);
         continueMessage.setPadding(dp(4), dp(12), dp(40), dp(12));
         continueMessage.setVisibility(View.GONE);
@@ -1396,6 +1501,7 @@ public class HomeActivity extends Activity {
         continueAllow.setOnClickListener(v -> requestPermissions(new String[]{WatchNext.PERMISSION}, REQUEST_WATCH_NEXT));
         continueAllow.setVisibility(View.GONE);
         page.addView(continueAllow, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        page.addView(buildHero(), new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(150)));
         HorizontalScrollView scroller = new HorizontalScrollView(this);
         scroller.setHorizontalScrollBarEnabled(false);
         scroller.setClipChildren(false);
@@ -1426,40 +1532,189 @@ public class HomeActivity extends Activity {
     }
 
     private void refreshContinue() {
-        if (checkSelfPermission(WatchNext.PERMISSION) != PackageManager.PERMISSION_GRANTED) {
-            continueRow.removeAllViews();
-            continueMessage.setText("Continue watching reads what your streaming apps offer to pick up where you left off. It stays on this TV.");
-            continueMessage.setVisibility(View.VISIBLE);
-            continueAllow.setVisibility(View.VISIBLE);
-            continueAllow.requestFocus();
-            return;
-        }
-        continueAllow.setVisibility(View.GONE);
+        boolean granted = checkSelfPermission(WatchNext.PERMISSION) == PackageManager.PERMISSION_GRANTED;
         Set<String> skip = new java.util.HashSet<>(prefs.hidden());
         skip.add(getPackageName());
+        List<WatchNext.Item> played = prefs.recent();
+        if (!granted) {
+            showContinueRow(WatchNext.merge(null, played, skip), false);
+            return;
+        }
         WatchNext.load(handler, getContentResolver(), skip, items -> {
-            if (!showingContinue) return;
-            continueRow.removeAllViews();
-            if (items == null || items.isEmpty()) {
-                continueMessage.setText(items == null
-                        ? "Could not read Continue watching on this TV."
-                        : "Nothing to continue yet. Apps show up here only if they publish what you were watching; some apps do not.");
-                continueMessage.setVisibility(View.VISIBLE);
-                return;
-            }
-            continueMessage.setVisibility(View.GONE);
-            for (WatchNext.Item item : items) {
-                View card = posterCard(item);
-                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-                if (continueRow.getChildCount() > 0) lp.setMarginStart(dp(GAP));
-                continueRow.addView(card, lp);
-            }
-            if (continueRow.getChildCount() > 0) continueRow.getChildAt(0).requestFocus();
+            if (showingContinue) showContinueRow(WatchNext.merge(items, played, skip), true);
         });
     }
 
+    private void showContinueRow(List<WatchNext.Item> list, boolean granted) {
+        continueRow.removeAllViews();
+        List<WatchNext.Item> shown = new ArrayList<>();
+        for (WatchNext.Item item : list) if (launchIntent(item.pkg) != null) shown.add(item);   // not uninstalled since
+        heroItem = null;
+        for (int i = 0; i < shown.size(); i++) {
+            WatchNext.Item item = shown.get(i);
+            View card = posterCard(item, i, shown.size());
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            if (continueRow.getChildCount() > 0) lp.setMarginStart(dp(GAP));
+            continueRow.addView(card, lp);
+        }
+        boolean empty = continueRow.getChildCount() == 0;
+        heroBox.setVisibility(empty ? View.GONE : View.VISIBLE);
+        continueTitle.setVisibility(empty ? View.VISIBLE : View.GONE);
+        String offered = "Allow access to also list what your apps offer under Continue watching.";
+        if (empty) {
+            continueMessage.setText("Nothing to continue yet. What you play on this TV shows up here"
+                    + (granted ? "; apps that publish to Continue watching add theirs." : ". " + offered));
+        } else {
+            continueMessage.setText(offered);
+        }
+        continueMessage.setVisibility(empty || !granted ? View.VISIBLE : View.GONE);
+        continueAllow.setVisibility(granted ? View.GONE : View.VISIBLE);
+        if (!empty) continueRow.getChildAt(0).requestFocus();
+        else if (!granted) continueAllow.requestFocus();
+    }
+
+    private void launchContinue(WatchNext.Item item) {
+        if (!item.recent) {
+            launchWatchNext(item);
+            return;
+        }
+        Intent deep = resumeIntent(item.pkg, item.mediaId, item.mediaUri, item.position);
+        if (deep == null || pm.resolveActivity(deep, 0) == null) deep = launchIntent(item.pkg);
+        if (deep != null) launch(deep);
+    }
+
+    // What was played, kept for the Continue tab (only while that tab is on; never leaves the TV).
+    private long recordedAt;
+    private int recordedState = -1;
+    private String recordedItem;
+
+    private void recordRecent(boolean force) {
+        if (!prefs.continueOn() || lastItem == null || lastPkg == null || lastTitle == null || lastTitle.length() == 0) return;
+        if (lastPkg.equals(getPackageName())) return;
+        long now = System.currentTimeMillis();
+        boolean changed = !lastItem.equals(recordedItem) || lastState != recordedState;
+        if (!force && !changed && now - recordedAt < 30_000) return;
+        recordedItem = lastItem;
+        recordedState = lastState;
+        recordedAt = now;
+        WatchNext.Item it = new WatchNext.Item();
+        it.pkg = lastPkg;
+        it.title = lastTitle.toString();
+        it.subtitle = lastArtist != null ? lastArtist.toString() : "";
+        it.mediaId = lastMediaId;
+        it.mediaUri = lastMediaUri;
+        it.position = rememberedPosition();
+        it.duration = lastDuration;
+        it.engaged = now;
+        it.recent = true;
+        prefs.addRecent(it);
+    }
+
+    // The focused item, large: its poster as a backdrop under a scrim, the title, where you were, and which of the row it is.
+    private FrameLayout heroBox;
+    private ImageView heroImage;
+    private TextView heroKicker, heroTitle, heroSub;
+    private LinearLayout heroDots;
+    private WatchNext.Item heroItem;
+    private int heroIndex, heroCount;
+
+    private View buildHero() {
+        heroBox = new FrameLayout(this);
+        GradientDrawable shape = new GradientDrawable();
+        shape.setCornerRadius(dp(Focus.CARD));
+        shape.setColor(palette.containerHigh);
+        heroBox.setBackground(shape);
+        heroBox.setClipToOutline(true);
+        heroBox.setVisibility(View.GONE);
+        heroImage = new ImageView(this);
+        heroImage.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        heroBox.addView(heroImage, match());
+        View scrim = new View(this);
+        scrim.setBackground(new GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT,
+                new int[]{withAlpha(palette.surface, 0xF2), withAlpha(palette.surface, 0xB0), withAlpha(palette.surface, 0x20)}));
+        heroBox.addView(scrim, match());
+        LinearLayout words = new LinearLayout(this);
+        words.setOrientation(LinearLayout.VERTICAL);
+        words.setGravity(Gravity.CENTER_VERTICAL);
+        words.setPadding(dp(28), dp(12), dp(28), dp(12));
+        heroKicker = text("Continue watching", 13, palette.primary, 650);
+        heroTitle = text("", 26, palette.onSurface, 700);
+        heroTitle.setSingleLine(true);
+        heroTitle.setEllipsize(TextUtils.TruncateAt.END);
+        heroSub = text("", 15, palette.onSurfaceVariant, 500);
+        heroSub.setSingleLine(true);
+        heroSub.setEllipsize(TextUtils.TruncateAt.END);
+        words.addView(heroKicker);
+        words.addView(heroTitle);
+        words.addView(heroSub);
+        heroBox.addView(words, new FrameLayout.LayoutParams(dp(560), ViewGroup.LayoutParams.MATCH_PARENT, Gravity.START));
+        heroDots = new LinearLayout(this);
+        heroDots.setOrientation(LinearLayout.HORIZONTAL);
+        FrameLayout.LayoutParams dl = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.END | Gravity.BOTTOM);
+        dl.setMargins(0, 0, dp(24), dp(16));
+        heroBox.addView(heroDots, dl);
+        return heroBox;
+    }
+
+    private Drawable appArtFor(String pkg) {
+        try {
+            return pm.getApplicationIcon(pkg);
+        } catch (PackageManager.NameNotFoundException e) {
+            return null;
+        }
+    }
+
+    private static String minutes(long ms) {
+        long s = ms / 1000;
+        return s >= 3600 ? String.format(Locale.US, "%d:%02d:%02d", s / 3600, s / 60 % 60, s % 60) : String.format(Locale.US, "%d:%02d", s / 60, s % 60);
+    }
+
+    private void showHero(WatchNext.Item item, int index, int count, Drawable icon) {
+        boolean sameItem = heroItem == item;
+        heroItem = item;
+        heroIndex = index;
+        heroCount = count;
+        heroTitle.setText(item.title);
+        StringBuilder sub = new StringBuilder(String.valueOf(appLabel(item.pkg)));
+        if (item.subtitle != null && !item.subtitle.isEmpty()) sub.append(" · ").append(item.subtitle);
+        if (item.position > 0) {
+            sub.append("  ·  ").append(minutes(item.position));
+            if (item.duration > 0) sub.append(" / ").append(minutes(item.duration));
+        }
+        heroSub.setText(sub);
+        Bitmap poster = item.poster != null ? posters.get(item.poster) : null;
+        if (poster != null) {
+            heroImage.setScaleType(ImageView.ScaleType.CENTER_CROP);
+            heroImage.setPadding(0, 0, 0, 0);
+            heroImage.setImageBitmap(poster);
+        } else {
+            heroImage.setScaleType(ImageView.ScaleType.FIT_CENTER);
+            heroImage.setPadding(dp(560), dp(24), dp(48), dp(24));
+            heroImage.setImageDrawable(icon);
+        }
+        if (!sameItem) {
+            heroImage.setAlpha(0f);
+            heroImage.animate().alpha(1f).setInterpolator(Motion.FAST_EFFECTS).setDuration(Motion.FAST_EFFECTS_MS).start();
+        }
+        if (heroDots.getChildCount() != count) {
+            heroDots.removeAllViews();
+            for (int i = 0; i < count; i++) {
+                View dot = new View(this);
+                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(8), dp(8));
+                if (i > 0) lp.setMarginStart(dp(6));
+                heroDots.addView(dot, lp);
+            }
+        }
+        for (int i = 0; i < heroDots.getChildCount(); i++) {
+            GradientDrawable d = new GradientDrawable();
+            d.setShape(GradientDrawable.OVAL);
+            d.setColor(i == index ? palette.primary : withAlpha(palette.onSurfaceVariant, 0x80));
+            heroDots.getChildAt(i).setBackground(d);
+        }
+    }
+
     /** A 16:9 poster with a thin progress line, the title and the app's name under it. */
-    private View posterCard(WatchNext.Item item) {
+    private View posterCard(WatchNext.Item item, int index, int count) {
         int w = dp(POSTER_DP);
         int h = w * 9 / 16;
         int radius = dp(Focus.MEDIA);
@@ -1477,6 +1732,10 @@ public class HomeActivity extends Activity {
         card.setClipToOutline(true);
         ImageView image = new ImageView(this);
         image.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        if (item.poster == null) {                      // played here: no poster, so the app's icon, whole, on the tile
+            image.setScaleType(ImageView.ScaleType.FIT_CENTER);
+            image.setPadding(dp(40), dp(24), dp(40), dp(24));
+        }
         card.addView(image, match());
         Drawable appArt = null;
         try {
@@ -1490,10 +1749,11 @@ public class HomeActivity extends Activity {
             if (known != null) {
                 image.setImageBitmap(known);
             } else {
-                Photos.image(handler, getContentResolver(), item.poster, w, bitmap -> {
+                Photos.image(handler, getContentResolver(), item.poster, dp(380), bitmap -> {
                     if (bitmap == null) return;
                     posters.put(item.poster, bitmap);
                     image.setImageBitmap(bitmap);
+                    if (heroItem == item) showHero(item, heroIndex, heroCount, appArtFor(item.pkg));
                 });
             }
         }
@@ -1517,7 +1777,7 @@ public class HomeActivity extends Activity {
         ringFrame.setPadding(dp(RING), dp(RING), dp(RING), dp(RING));
         ringFrame.setBackground(ring);
         ringFrame.addView(card, new FrameLayout.LayoutParams(w, h));
-        card.setOnClickListener(v -> launchWatchNext(item));
+        card.setOnClickListener(v -> launchContinue(item));
         card.setOnFocusChangeListener((v, focused) -> {
             float scale = focused ? 1.10f : 1f;
             ringFrame.animate().scaleX(scale).scaleY(scale)
@@ -1533,6 +1793,7 @@ public class HomeActivity extends Activity {
             ring.setCornerRadius((focused ? radius * 0.62f : radius) + dp(RING));
             fadeRing(ring, focused);
             if (focused) {
+                showHero(item, index, count, fallback);
                 Drawable art = image.getDrawable() != null ? image.getDrawable() : fallback;
                 if (art != null) onTileFocused("watch:" + item.pkg + "|" + item.title, item.title, art);
             }
@@ -1543,7 +1804,7 @@ public class HomeActivity extends Activity {
         name.setEllipsize(TextUtils.TruncateAt.END);
         name.setPadding(dp(RING), dp(8), dp(RING), 0);
         holder.addView(name, new LinearLayout.LayoutParams(w + dp(2 * RING), ViewGroup.LayoutParams.WRAP_CONTENT));
-        TextView from = text(label, 13, palette.onSurfaceVariant, 500);
+        TextView from = text(label + (item.subtitle != null && !item.subtitle.isEmpty() ? " · " + item.subtitle : ""), 13, palette.onSurfaceVariant, 500);
         from.setSingleLine(true);
         from.setPadding(dp(RING), dp(2), dp(RING), 0);
         holder.addView(from, new LinearLayout.LayoutParams(w + dp(2 * RING), ViewGroup.LayoutParams.WRAP_CONTENT));
@@ -1565,6 +1826,300 @@ public class HomeActivity extends Activity {
         }
         if (intent == null || pm.resolveActivity(intent, 0) == null) intent = launchIntent(item.pkg);
         if (intent != null) launch(intent);
+    }
+
+    // ---- quick panel ----
+
+    private Dialog quickDialog;
+
+    /** The Settings tab: the launcher's preferences and the TV's own pages, as tiles over Home. */
+    private void showQuickPanel() {
+        Dialog d = new Dialog(this);
+        d.requestWindowFeature(Window.FEATURE_NO_TITLE);
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(dp(14), dp(10), dp(14), dp(14));
+        GradientDrawable cardShape = new GradientDrawable();
+        cardShape.setCornerRadius(dp(Focus.CARD));
+        cardShape.setColor(palette.containerHigh);
+        card.setBackground(cardShape);
+        TextView head = text("Quick panel", 14, palette.onSurfaceVariant, 600);
+        head.setPadding(dp(8), dp(4), 0, dp(8));
+        card.addView(head);
+        GridLayout grid = new GridLayout(this);
+        grid.setColumnCount(3);
+        Object[][] entries = {
+                {R.drawable.ic_tune, "Preferences", (Runnable) this::showLauncherSettings},
+                {R.drawable.ic_wifi, "Wi-Fi", (Runnable) () -> launch(new Intent(Settings.ACTION_WIFI_SETTINGS))},
+                {R.drawable.ic_display, "Display", (Runnable) () -> launch(new Intent(Settings.ACTION_DISPLAY_SETTINGS))},
+                {R.drawable.ic_sound, "Sound", (Runnable) () -> launch(new Intent(Settings.ACTION_SOUND_SETTINGS))},
+                {R.drawable.ic_moon, "Screen saver", (Runnable) () -> launch(new Intent("android.settings.DREAM_SETTINGS"))},
+                {R.drawable.ic_home, "Default home", (Runnable) () -> launch(new Intent(Settings.ACTION_HOME_SETTINGS))},
+                {R.drawable.ic_settings, "TV settings", (Runnable) () -> launch(new Intent(Settings.ACTION_SETTINGS))},
+        };
+        View first = null;
+        for (Object[] e : entries) {
+            View tile = quickTile((Integer) e[0], (String) e[1], (Runnable) e[2], d);
+            GridLayout.LayoutParams lp = new GridLayout.LayoutParams();
+            lp.width = dp(112);
+            lp.height = dp(86);
+            lp.setMargins(dp(4), dp(4), dp(4), dp(4));
+            grid.addView(tile, lp);
+            if (first == null) first = tile;
+        }
+        card.addView(grid);
+        d.setContentView(card);
+        Window w = d.getWindow();
+        if (w != null) {
+            w.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+            WindowManager.LayoutParams p = w.getAttributes();
+            p.gravity = Gravity.TOP | Gravity.END;
+            p.x = dp(SIDE);
+            p.y = dp(96);
+            p.dimAmount = 0.35f;
+            w.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
+            w.setAttributes(p);
+        }
+        quickDialog = d;
+        d.setOnDismissListener(x -> quickDialog = null);
+        d.show();
+        if (first != null) first.requestFocus();
+    }
+
+    private View quickTile(int icon, String label, Runnable action, Dialog dialog) {
+        LinearLayout tile = new LinearLayout(this);
+        tile.setOrientation(LinearLayout.VERTICAL);
+        tile.setGravity(Gravity.CENTER);
+        tile.setFocusable(true);
+        tile.setClickable(true);
+        GradientDrawable shape = new GradientDrawable();
+        shape.setCornerRadius(dp(Focus.MEDIA));
+        shape.setColor(palette.container);
+        tile.setBackground(shape);
+        ImageView image = new ImageView(this);
+        image.setImageResource(icon);
+        image.setImageTintList(ColorStateList.valueOf(palette.onSurface));
+        tile.addView(image, new LinearLayout.LayoutParams(dp(26), dp(26)));
+        TextView name = text(label, 13, palette.onSurface, 560);
+        name.setGravity(Gravity.CENTER);
+        name.setSingleLine(true);
+        name.setPadding(dp(4), dp(8), dp(4), 0);
+        tile.addView(name);
+        tile.setOnFocusChangeListener((v, focused) -> {
+            shape.setColor(focused ? palette.inverseSurface : palette.container);
+            image.setImageTintList(ColorStateList.valueOf(focused ? palette.inverseOnSurface : palette.onSurface));
+            name.setTextColor(focused ? palette.inverseOnSurface : palette.onSurface);
+            v.animate().scaleX(focused ? 1.05f : 1f).scaleY(focused ? 1.05f : 1f)
+                    .setInterpolator(Motion.FAST_SPATIAL).setDuration(Motion.FAST_SPATIAL_MS).start();
+        });
+        tile.setOnClickListener(v -> {
+            dialog.dismiss();
+            action.run();
+        });
+        return tile;
+    }
+
+    // ---- folders ----
+
+    private Dialog folderDialog;
+
+    private String folderOf(String pkg) {
+        for (Map.Entry<String, List<String>> e : prefs.folders().entrySet()) {
+            if (e.getValue().contains(pkg)) return e.getKey();
+        }
+        return null;
+    }
+
+    private void addToFolder(String name, String pkg) {
+        Map<String, List<String>> folders = prefs.folders();
+        List<String> list = folders.get(name);
+        if (list == null) {
+            list = new ArrayList<>();
+            folders.put(name, list);
+        }
+        if (!list.contains(pkg)) list.add(pkg);
+        prefs.setFolders(folders);
+        refreshApps();
+    }
+
+    private void chooseFolder(String pkg) {
+        List<String> names = new ArrayList<>(prefs.folders().keySet());
+        List<String> items = new ArrayList<>(names);
+        items.add("New folder");
+        new AlertDialog.Builder(this)
+                .setTitle("Add to folder")
+                .setItems(items.toArray(new String[0]), (d, which) -> {
+                    if (which < names.size()) addToFolder(names.get(which), pkg);
+                    else askName("New folder", "", name -> addToFolder(name, pkg));
+                })
+                .show();
+    }
+
+    private void askName(String title, String initial, java.util.function.Consumer<String> done) {
+        EditText input = new EditText(this);
+        input.setSingleLine(true);
+        input.setText(initial);
+        input.setSelection(initial.length());
+        input.setHint("Folder name");
+        new AlertDialog.Builder(this)
+                .setTitle(title)
+                .setView(input)
+                .setPositiveButton("OK", (d, w) -> {
+                    String name = input.getText().toString().trim().replace("\"", "");
+                    if (!name.isEmpty()) done.accept(name);
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    /** Hold OK on a folder: rename it, or delete it (its apps go back to the grid). */
+    private void showFolderMenu(String name) {
+        new AlertDialog.Builder(this)
+                .setTitle(name)
+                .setItems(new String[]{"Rename folder", "Delete folder"}, (d, which) -> {
+                    Map<String, List<String>> folders = prefs.folders();
+                    if (which == 0) {
+                        askName("Rename folder", name, newName -> {
+                            Map<String, List<String>> all = prefs.folders();
+                            List<String> apps = all.remove(name);
+                            if (apps == null) return;
+                            List<String> merged = all.get(newName);
+                            if (merged != null) apps.addAll(merged);
+                            all.put(newName, apps);
+                            prefs.setFolders(all);
+                            refreshApps();
+                        });
+                    } else {
+                        folders.remove(name);
+                        prefs.setFolders(folders);
+                        refreshApps();
+                    }
+                })
+                .show();
+    }
+
+    /** A folder on the Apps page: up to four of its apps' icons on a tonal card, the name underneath. */
+    private View folderTile(String name, List<String> pkgs, int widthDp) {
+        int w = dp(widthDp);
+        int h = w * 9 / 16;
+        int radius = dp(Focus.MEDIA);
+        LinearLayout holder = new LinearLayout(this);
+        holder.setOrientation(LinearLayout.VERTICAL);
+        holder.setClipChildren(false);
+        holder.setGravity(Gravity.CENTER_HORIZONTAL);
+
+        FrameLayout card = new FrameLayout(this);
+        card.setFocusable(true);
+        card.setClickable(true);
+        GradientDrawable cardShape = new GradientDrawable();
+        cardShape.setCornerRadius(radius);
+        cardShape.setColor(palette.containerHigh);
+        card.setBackground(cardShape);
+        card.setClipToOutline(true);
+        GridLayout minis = new GridLayout(this);
+        minis.setColumnCount(2);
+        Drawable firstIcon = null;
+        int shown = 0;
+        for (String pkg : pkgs) {
+            if (shown >= 4) break;
+            Drawable icon = appArtFor(pkg);
+            if (icon == null) continue;
+            if (firstIcon == null) firstIcon = icon;
+            ImageView mini = new ImageView(this);
+            mini.setImageDrawable(icon);
+            GridLayout.LayoutParams lp = new GridLayout.LayoutParams();
+            lp.width = Math.round(h * 0.36f);
+            lp.height = Math.round(h * 0.36f);
+            lp.setMargins(dp(3), dp(3), dp(3), dp(3));
+            minis.addView(mini, lp);
+            shown++;
+        }
+        card.addView(minis, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER));
+        card.setContentDescription(name);
+
+        GradientDrawable ring = new GradientDrawable();
+        ring.setCornerRadius(radius + dp(RING));
+        ring.setColor(Color.TRANSPARENT);
+        FrameLayout ringFrame = new FrameLayout(this);
+        ringFrame.setClipChildren(false);
+        ringFrame.setPadding(dp(RING), dp(RING), dp(RING), dp(RING));
+        ringFrame.setBackground(ring);
+        ringFrame.addView(card, new FrameLayout.LayoutParams(w, h));
+        card.setOnClickListener(v -> showFolder(name));
+        card.setOnLongClickListener(v -> {
+            showFolderMenu(name);
+            return true;
+        });
+        final Drawable art = firstIcon;
+        card.setOnFocusChangeListener((v, focused) -> {
+            float scale = focused ? 1.10f : 1f;
+            ringFrame.animate().scaleX(scale).scaleY(scale)
+                    .setInterpolator(Motion.FAST_SPATIAL).setDuration(Motion.FAST_SPATIAL_MS).start();
+            card.setOutlineSpotShadowColor(palette.primary);
+            card.setOutlineAmbientShadowColor(palette.primary);
+            card.animate().translationZ(focused ? dp(14) : 0)
+                    .setInterpolator(Motion.FAST_EFFECTS).setDuration(Motion.DEFAULT_EFFECTS_MS).start();
+            ObjectAnimator corners = ObjectAnimator.ofFloat(cardShape, "cornerRadius", cardShape.getCornerRadius(), focused ? radius * 0.62f : radius)
+                    .setDuration(Motion.FAST_SPATIAL_MS);
+            corners.setInterpolator(Motion.FAST_SPATIAL);
+            corners.start();
+            ring.setCornerRadius((focused ? radius * 0.62f : radius) + dp(RING));
+            fadeRing(ring, focused);
+            if (focused && art != null) onTileFocused("folder:" + name, name, art);
+        });
+        holder.addView(ringFrame, new LinearLayout.LayoutParams(w + dp(2 * RING), h + dp(2 * RING)));
+        TextView caption = text(name + "  ·  " + pkgs.size(), 14, palette.onSurfaceVariant, 560);
+        caption.setGravity(Gravity.CENTER_HORIZONTAL);
+        caption.setSingleLine(true);
+        caption.setEllipsize(TextUtils.TruncateAt.END);
+        caption.setPadding(0, dp(10), 0, 0);
+        holder.addView(caption, new LinearLayout.LayoutParams(w + dp(2 * RING), ViewGroup.LayoutParams.WRAP_CONTENT));
+        return holder;
+    }
+
+    /** The folder's apps in a panel over the Apps page. */
+    private void showFolder(String name) {
+        List<String> pkgs = new ArrayList<>();
+        Set<String> hidden = prefs.hidden();
+        List<String> all = prefs.folders().get(name);
+        if (all != null) for (String pkg : all) if (!hidden.contains(pkg) && launchIntent(pkg) != null) pkgs.add(pkg);
+        if (pkgs.isEmpty()) return;
+        Dialog d = new Dialog(this);
+        d.requestWindowFeature(Window.FEATURE_NO_TITLE);
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(28), dp(20), dp(28), dp(20));
+        box.setClipChildren(false);
+        GradientDrawable shape = new GradientDrawable();
+        shape.setCornerRadius(dp(Focus.CARD));
+        shape.setColor(palette.container);
+        box.setBackground(shape);
+        TextView title = text(name, 22, palette.onSurface, 700);
+        title.setPadding(dp(4), 0, 0, dp(6));
+        box.addView(title);
+        GridLayout grid = new GridLayout(this);
+        grid.setColumnCount(Math.min(4, pkgs.size()));
+        grid.setClipChildren(false);
+        View first = null;
+        for (String pkg : pkgs) {
+            View tile = tile(pkg, launchIntent(pkg), 140, false);
+            GridLayout.LayoutParams lp = new GridLayout.LayoutParams();
+            lp.setMargins(dp(8), dp(8), dp(8), dp(12));
+            grid.addView(tile, lp);
+            if (first == null) first = tile;
+        }
+        box.addView(grid);
+        d.setContentView(box);
+        Window w = d.getWindow();
+        if (w != null) {
+            w.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+            w.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
+            w.setDimAmount(0.45f);
+        }
+        folderDialog = d;
+        d.setOnDismissListener(x -> folderDialog = null);
+        d.show();
+        if (first != null) first.requestFocus();
     }
 
     // ---- pages ----
@@ -1877,6 +2432,7 @@ public class HomeActivity extends Activity {
         lastSeenAt = System.currentTimeMillis();
         if (lastState == PlaybackState.STATE_PLAYING || lastState == PlaybackState.STATE_BUFFERING) sessionPlayFailed = false;
         handler.removeCallbacks(expire);
+        recordRecent(false);
     }
 
     /** The session stopped or went away: pin the position it had at this moment and start the 6 h clock. */
@@ -1889,6 +2445,7 @@ public class HomeActivity extends Activity {
         sessionPlayFailed = false;
         handler.removeCallbacks(expire);
         handler.postDelayed(expire, REMEMBER_MS);
+        recordRecent(true);
     }
 
     /** Where the remembered item is now: the last reported position, run forward while it was playing, within its length. */

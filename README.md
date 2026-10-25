@@ -75,3 +75,8 @@ Apache 2.0, see [`LICENSE`](LICENSE). Bundled:
 [material-color-utilities](https://github.com/material-foundation/material-color-utilities) (Apache 2.0) and
 [Google Sans Flex](https://github.com/googlefonts/googlesans-flex) (SIL Open Font License 1.1). "Google",
 "Google Sans" and "Material Design" belong to Google; this project is not affiliated with or endorsed by Google.
+
+The 14 photos in [`assets/wallpapers`](assets/wallpapers) are **not** under Apache 2.0: eight are NASA photos of Earth from
+the International Space Station (public domain) and six are Wikimedia Commons photographs under CC BY-SA 3.0 or 4.0,
+cropped and resized to 1920 × 1080 (the picture set comes from [glassOS-tv](https://github.com/jmarknavarro/glassOS-tv)).
+Photographers, titles and licence links are in [`assets/wallpapers/CREDITS.md`](assets/wallpapers/CREDITS.md); keep that file with the pictures.

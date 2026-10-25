@@ -1,6 +1,7 @@
 package com.rampey.materialtv;
 
 import android.content.ContentResolver;
+import android.content.res.AssetManager;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.os.Handler;
@@ -95,6 +96,21 @@ final class Photos {
             } catch (Exception ignored) {
             } finally {
                 if (c != null) c.disconnect();
+            }
+            Bitmap result = bitmap;
+            ui.post(() -> cb.done(result));
+        });
+    }
+
+    /** A bundled photo, decoded as RGB_565 (half the memory of a full-color 1920x1080), for wallpapers. */
+    static void asset(Handler ui, AssetManager assets, String path, Weather.Callback<Bitmap> cb) {
+        IO.execute(() -> {
+            Bitmap bitmap = null;
+            try (InputStream in = assets.open(path)) {
+                BitmapFactory.Options opts = new BitmapFactory.Options();
+                opts.inPreferredConfig = Bitmap.Config.RGB_565;
+                bitmap = BitmapFactory.decodeStream(in, null, opts);
+            } catch (Exception ignored) {
             }
             Bitmap result = bitmap;
             ui.post(() -> cb.done(result));

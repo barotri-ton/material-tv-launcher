@@ -55,6 +55,15 @@ final class Prefs {
         return h24 ? "HH:mm" : "h:mm";
     }
 
+    /** Screensaver shows random online photos instead of the generated shapes. */
+    boolean photosOn() {
+        return sp.getBoolean("photos", false);
+    }
+
+    void setPhotosOn(boolean on) {
+        sp.edit().putBoolean("photos", on).apply();
+    }
+
     // ---- weather (off until a city is set) ----
 
     boolean weatherOn() {
@@ -106,7 +115,7 @@ final class Prefs {
     /** Every choice back to how it came; pinned and hidden apps stay. */
     void resetSettings() {
         SharedPreferences.Editor e = sp.edit();
-        for (String key : new String[]{"reduced_motion", "columns", "clock_mode", "start_app", "fahrenheit", "weather_city", "weather_lat",
+        for (String key : new String[]{"reduced_motion", "columns", "clock_mode", "start_app", "fahrenheit", "photos", "weather_city", "weather_lat",
                 "weather_lon", "weather_text", "weather_at"}) e.remove(key);
         e.apply();
     }

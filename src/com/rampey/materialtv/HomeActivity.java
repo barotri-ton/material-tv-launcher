@@ -1170,12 +1170,17 @@ public class HomeActivity extends Activity {
         });
         items.add("Weather: " + (prefs.weatherOn() ? prefs.weatherCity() : "Off"));
         actions.add(this::showWeatherSettings);
+        items.add("Screensaver photos: " + (prefs.photosOn() ? "On (needs the internet)" : "Off"));
+        actions.add(() -> {
+            prefs.setPhotosOn(!prefs.photosOn());
+            showLauncherSettings();
+        });
         items.add("System shortcuts");
         actions.add(this::showShortcuts);
         items.add("Reset launcher settings");
         actions.add(() -> new AlertDialog.Builder(this)
                 .setTitle("Reset launcher settings?")
-                .setMessage("Animations, apps per row, clock, weather and the start app go back to how they came. Pinned and hidden apps stay.")
+                .setMessage("Animations, apps per row, clock, weather, photos and the start app go back to how they came. Pinned and hidden apps stay.")
                 .setPositiveButton("Reset", (d, w) -> {
                     prefs.resetSettings();
                     drifting = true;

@@ -31,7 +31,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG=android9-latest
+          VERSION=$(grep -o 'VERSION_NAME:-[0-9.]*' build.sh | cut -d- -f2)
           gh release delete "$TAG" --cleanup-tag --yes -R "$GITHUB_REPOSITORY" || true
           gh release create "$TAG" build/material-tv-launcher.apk install.sh uninstall.sh -R "$GITHUB_REPOSITORY" \
-            --target "$GITHUB_SHA" --title "Android 9 build" \
-            --notes "Material TV Launcher for Android 9+ (API 28). Built from $GITHUB_SHA."
+            --target "$GITHUB_SHA" --title "Android 9 build v$VERSION" \
+            --notes "Material TV Launcher $VERSION for Android 9+ (API 28). Built from $GITHUB_SHA."

@@ -37,6 +37,7 @@ public class Screensaver extends DreamService {
     private static final long PALETTE_EVERY = 60 * 60_000L;   // a new wallpaper every hour (owner choice)
 
     private final Handler handler = new Handler(Looper.getMainLooper());
+    private Prefs prefs;
     private FrameLayout root;
     private ShapeScene scene;
     private LinearLayout block;
@@ -62,8 +63,9 @@ public class Screensaver extends DreamService {
     private final Runnable tick = new Runnable() {
         @Override public void run() {
             Date d = new Date();
-            clock.setText(new SimpleDateFormat("h:mm", Locale.getDefault()).format(d));
-            date.setText(new SimpleDateFormat("EEEE, MMMM d", Locale.getDefault()).format(d));
+            clock.setText(new SimpleDateFormat(prefs.clockPattern(Screensaver.this), Locale.getDefault()).format(d));
+            String weather = prefs.weatherOn() ? prefs.weatherText() : "";
+            date.setText(new SimpleDateFormat("EEEE, MMMM d", Locale.getDefault()).format(d) + (weather.isEmpty() ? "" : "  ·  " + weather));
             updateSong();
             // Move the clock block slightly each minute (no fixed pixels on the panel for hours).
             int m = (int) (System.currentTimeMillis() / 60_000L);
@@ -95,6 +97,7 @@ public class Screensaver extends DreamService {
 
     @Override public void onAttachedToWindow() {
         super.onAttachedToWindow();
+        prefs = new Prefs(this);
         setInteractive(false);
         setFullscreen(true);
         hue = (System.currentTimeMillis() / 1000L) % 360;
@@ -106,9 +109,65 @@ public class Screensaver extends DreamService {
         super.onDreamingStarted();
         running = true;
         last = 0;
-        root.postOnAnimation(drift);
         handler.post(tick);
+        // With photos on, the generated shapes wait (still, costing nothing) for the first photo; if none arrives
+        // they take over as usual.
+        if (prefs.photosOn()) handler.post(nextPhoto);
+        else startScenes();
+    }
+
+    private void startScenes() {
+        last = 0;
+        root.postOnAnimation(drift);
         handler.postDelayed(shift, PALETTE_EVERY);
+    }
+
+    // ---- photos (optional, online) ----
+
+    private static final long PHOTO_EVERY = 2 * 60_000L;
+    private ImageView photo;
+    private boolean photoShown;
+
+    private final Runnable nextPhoto = new Runnable() {
+        @Override public void run() {
+            Photos.fetch(handler, bitmap -> {
+                if (!running) return;
+                if (bitmap == null) {
+                    if (!photoShown) startScenes();             // offline: the shapes, as without photos
+                    else handler.postDelayed(nextPhoto, PHOTO_EVERY);
+                    return;
+                }
+                showPhoto(bitmap);
+                handler.postDelayed(nextPhoto, PHOTO_EVERY);
+            });
+        }
+    };
+
+    /** Crossfade to a new photo; a left scrim keeps the clock readable and the text turns light over it. */
+    private void showPhoto(android.graphics.Bitmap bitmap) {
+        ImageView next = new ImageView(this);
+        next.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        next.setImageBitmap(bitmap);
+        next.setAlpha(0f);
+        ImageView old = photo;
+        boolean first = old == null;
+        int at = (first ? root.indexOfChild(scene) : root.indexOfChild(old)) + 1;
+        root.addView(next, at, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        if (first) {
+            View scrim = new View(this);
+            scrim.setBackground(new GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, new int[]{0xCC000000, 0x00000000}));
+            root.addView(scrim, at + 1, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            clock.setTextColor(0xFFFFFFFF);
+            date.setTextColor(0xE6FFFFFF);
+            song.setTextColor(0xE6FFFFFF);
+            photoShown = true;
+        }
+        photo = next;
+        next.animate().alpha(1f).setDuration(2400).setInterpolator(new PathInterpolator(0.2f, 0f, 0f, 1f))
+                .withEndAction(() -> {
+                    if (old != null) root.removeView(old);
+                    else scene.setVisibility(View.GONE);
+                }).start();
     }
 
     @Override public void onDreamingStopped() {

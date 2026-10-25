@@ -4,7 +4,8 @@
 
     <uses-feature android:name="android.software.leanback" android:required="false" />
 
-    <!-- No INTERNET permission: the launcher never goes online. -->
+    <!-- Online only for the optional weather and screensaver photos (both off until you turn them on). -->
+    <uses-permission android:name="android.permission.INTERNET" />
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
 
     <!-- Android 11+ package visibility: only apps with a TV or phone launcher entry. -->
@@ -24,6 +25,12 @@
 
     <!-- Per-app screen time, read on the TV only, to order the dock by use (granted over ADB by install.sh). -->
     <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS" />
+
+    <!-- The optional Continue tab: what the TV's apps offer under Continue watching (Watch Next). -->
+    <uses-permission android:name="android.permission.READ_TV_LISTINGS" />
+
+    <!-- The tile menu's Uninstall: opens Android's own confirmation for apps the user installed. -->
+    <uses-permission android:name="android.permission.REQUEST_DELETE_PACKAGES" />
 
     <application
         android:label="Material TV Launcher"

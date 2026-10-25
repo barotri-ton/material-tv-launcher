@@ -1,7 +1,7 @@
 # Contributing
 
 Thanks for helping. The launcher stays deliberately small: plain Java, no Gradle, no dependencies beyond the
-vendored color library, and no network. It should run well on cheap TVs.
+vendored color library, and no network use beyond the two optional features (weather, screensaver photos). It should run well on cheap TVs.
 
 ## 1. Report a tested TV
 
@@ -16,7 +16,7 @@ The most useful contribution. Open an issue with:
 
 Fits the direction: pinning apps in the dock, icon fallbacks for apps without a TV banner, localization, better D-pad behavior at the edges.
 
-Doesn't fit: recommendation rows, content feeds, ads, telemetry, anything that needs the `INTERNET` permission.
+Doesn't fit: recommendation rows, content feeds, ads, telemetry, anything that goes online without being an opt-in feature that sends nothing about the user.
 
 Rules of thumb:
 

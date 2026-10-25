@@ -6,7 +6,9 @@ import android.text.TextUtils;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /** The launcher's own choices, kept on the TV: pinned dock apps, calmer motion, apps per row, the app to open at boot. */
 final class Prefs {
@@ -26,6 +28,105 @@ final class Prefs {
 
     void setPinned(List<String> packages) {
         sp.edit().putString("pinned", TextUtils.join(",", packages)).apply();
+    }
+
+    /** Apps hidden from the dock and the Apps page (they stay installed). */
+    Set<String> hidden() {
+        String s = sp.getString("hidden", "");
+        return s.isEmpty() ? new HashSet<>() : new HashSet<>(Arrays.asList(s.split(",")));
+    }
+
+    void setHidden(Set<String> packages) {
+        sp.edit().putString("hidden", TextUtils.join(",", packages)).apply();
+    }
+
+    /** 0 follows the TV's own 12/24-hour setting, 1 is 12-hour, 2 is 24-hour. */
+    int clockMode() {
+        return sp.getInt("clock_mode", 0);
+    }
+
+    void setClockMode(int mode) {
+        sp.edit().putInt("clock_mode", mode).apply();
+    }
+
+    String clockPattern(Context c) {
+        int mode = clockMode();
+        boolean h24 = mode == 2 || (mode == 0 && android.text.format.DateFormat.is24HourFormat(c));
+        return h24 ? "HH:mm" : "h:mm";
+    }
+
+    /** Screensaver shows random online photos instead of the generated shapes. */
+    boolean photosOn() {
+        return sp.getBoolean("photos", false);
+    }
+
+    void setPhotosOn(boolean on) {
+        sp.edit().putBoolean("photos", on).apply();
+    }
+
+    /** The Continue tab: what apps offer under Watch Next. */
+    boolean continueOn() {
+        return sp.getBoolean("continue", false);
+    }
+
+    void setContinueOn(boolean on) {
+        sp.edit().putBoolean("continue", on).apply();
+    }
+
+    // ---- weather (off until a city is set) ----
+
+    boolean weatherOn() {
+        return sp.contains("weather_lat");
+    }
+
+    String weatherCity() {
+        return sp.getString("weather_city", "");
+    }
+
+    double weatherLat() {
+        return Double.longBitsToDouble(sp.getLong("weather_lat", 0));
+    }
+
+    double weatherLon() {
+        return Double.longBitsToDouble(sp.getLong("weather_lon", 0));
+    }
+
+    void setWeatherPlace(String city, double lat, double lon) {
+        sp.edit().putString("weather_city", city).putLong("weather_lat", Double.doubleToLongBits(lat))
+                .putLong("weather_lon", Double.doubleToLongBits(lon)).remove("weather_text").remove("weather_at").apply();
+    }
+
+    void clearWeather() {
+        sp.edit().remove("weather_city").remove("weather_lat").remove("weather_lon").remove("weather_text").remove("weather_at").apply();
+    }
+
+    boolean fahrenheit() {
+        return sp.getBoolean("fahrenheit", false);
+    }
+
+    void setFahrenheit(boolean on) {
+        sp.edit().putBoolean("fahrenheit", on).remove("weather_text").remove("weather_at").apply();
+    }
+
+    /** The last weather line ("21°C · Clear"), kept so the screensaver can show it without going online. */
+    String weatherText() {
+        return sp.getString("weather_text", "");
+    }
+
+    long weatherAt() {
+        return sp.getLong("weather_at", 0);
+    }
+
+    void setWeatherText(String text) {
+        sp.edit().putString("weather_text", text).putLong("weather_at", System.currentTimeMillis()).apply();
+    }
+
+    /** Every choice back to how it came; pinned and hidden apps stay. */
+    void resetSettings() {
+        SharedPreferences.Editor e = sp.edit();
+        for (String key : new String[]{"reduced_motion", "columns", "clock_mode", "start_app", "fahrenheit", "photos", "continue", "weather_city", "weather_lat",
+                "weather_lon", "weather_text", "weather_at"}) e.remove(key);
+        e.apply();
     }
 
     boolean reducedMotion() {

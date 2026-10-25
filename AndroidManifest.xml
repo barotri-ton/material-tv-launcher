@@ -26,6 +26,9 @@
     <!-- Per-app screen time, read on the TV only, to order the dock by use (granted over ADB by install.sh). -->
     <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS" />
 
+    <!-- The optional Continue tab: what the TV's apps offer under Continue watching (Watch Next). -->
+    <uses-permission android:name="android.permission.READ_TV_LISTINGS" />
+
     <application
         android:label="Material TV Launcher"
         android:icon="@drawable/icon"

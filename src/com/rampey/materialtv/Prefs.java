@@ -64,6 +64,15 @@ final class Prefs {
         sp.edit().putBoolean("photos", on).apply();
     }
 
+    /** The Continue tab: what apps offer under Watch Next. */
+    boolean continueOn() {
+        return sp.getBoolean("continue", false);
+    }
+
+    void setContinueOn(boolean on) {
+        sp.edit().putBoolean("continue", on).apply();
+    }
+
     // ---- weather (off until a city is set) ----
 
     boolean weatherOn() {
@@ -115,7 +124,7 @@ final class Prefs {
     /** Every choice back to how it came; pinned and hidden apps stay. */
     void resetSettings() {
         SharedPreferences.Editor e = sp.edit();
-        for (String key : new String[]{"reduced_motion", "columns", "clock_mode", "start_app", "fahrenheit", "photos", "weather_city", "weather_lat",
+        for (String key : new String[]{"reduced_motion", "columns", "clock_mode", "start_app", "fahrenheit", "photos", "continue", "weather_city", "weather_lat",
                 "weather_lon", "weather_text", "weather_at"}) e.remove(key);
         e.apply();
     }

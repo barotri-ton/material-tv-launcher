@@ -284,7 +284,8 @@ public class HomeActivity extends Activity {
     @Override protected void onResume() {
         super.onResume();
         fillDock();
-        if (showingApps) fillApps();
+        if (showingApps && !showingContinue) fillApps();
+        if (showingContinue) refreshContinue();
         handler.removeCallbacks(tick);
         handler.post(tick);
         drifting = !prefs.reducedMotion();
@@ -405,6 +406,9 @@ public class HomeActivity extends Activity {
         appsPage.addView(appsColumn, new ScrollView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         appsPage.setVisibility(View.GONE);
         pages.addView(appsPage, match());
+        continuePage = buildContinuePage();
+        continuePage.setVisibility(View.GONE);
+        pages.addView(continuePage, match());
         return root;
     }
 
@@ -430,16 +434,18 @@ public class HomeActivity extends Activity {
         bar.addView(when, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.START | Gravity.TOP));
 
         nav = new ButtonGroup(this, font(600), palette,
-                new String[]{"Home", "Apps", "Settings"},
-                new int[]{R.drawable.ic_home, R.drawable.ic_apps, R.drawable.ic_settings},
-                new boolean[]{true, true, false},
+                new String[]{"Home", "Apps", "Continue", "Settings"},
+                new int[]{R.drawable.ic_home, R.drawable.ic_apps, R.drawable.ic_play, R.drawable.ic_settings},
+                new boolean[]{true, true, true, false},
                 index -> {
                     if (index == 0) showHome();
                     else if (index == 1) showApps();
+                    else if (index == 2) showContinue();
                     else launch(new Intent(Settings.ACTION_SETTINGS));
                 });
         nav.select(0);
-        nav.button(2).setOnLongClickListener(v -> {
+        applyContinueTab();
+        nav.button(3).setOnLongClickListener(v -> {
             showLauncherSettings();
             return true;
         });
@@ -1170,6 +1176,13 @@ public class HomeActivity extends Activity {
         });
         items.add("Weather: " + (prefs.weatherOn() ? prefs.weatherCity() : "Off"));
         actions.add(this::showWeatherSettings);
+        items.add("Continue watching tab: " + (prefs.continueOn() ? "On" : "Off"));
+        actions.add(() -> {
+            prefs.setContinueOn(!prefs.continueOn());
+            applyContinueTab();
+            if (!prefs.continueOn() && showingContinue) showHome();
+            showLauncherSettings();
+        });
         items.add("Screensaver photos: " + (prefs.photosOn() ? "On (needs the internet)" : "Off"));
         actions.add(() -> {
             prefs.setPhotosOn(!prefs.photosOn());
@@ -1180,7 +1193,7 @@ public class HomeActivity extends Activity {
         items.add("Reset launcher settings");
         actions.add(() -> new AlertDialog.Builder(this)
                 .setTitle("Reset launcher settings?")
-                .setMessage("Animations, apps per row, clock, weather, photos and the start app go back to how they came. Pinned and hidden apps stay.")
+                .setMessage("Animations, apps per row, clock, weather, photos, the Continue tab and the start app go back to how they came. Pinned and hidden apps stay.")
                 .setPositiveButton("Reset", (d, w) -> {
                     prefs.resetSettings();
                     drifting = true;
@@ -1194,6 +1207,8 @@ public class HomeActivity extends Activity {
                     appsKey = null;
                     if (showingApps) fillApps();
                     showWeather();
+                    applyContinueTab();
+                    if (showingContinue) showHome();
                 })
                 .setNegativeButton("Cancel", null)
                 .show());
@@ -1314,11 +1329,230 @@ public class HomeActivity extends Activity {
                 .show();
     }
 
+    // ---- Continue watching ----
+
+    private LinearLayout continuePage;
+    private LinearLayout continueRow;
+    private TextView continueMessage;
+    private TextView continueAllow;
+    private boolean showingContinue;
+    private static final int POSTER_DP = 260;
+    private static final int REQUEST_WATCH_NEXT = 7;
+    private final Map<String, Bitmap> posters = new java.util.LinkedHashMap<String, Bitmap>(16, 0.75f, true) {
+        @Override protected boolean removeEldestEntry(Map.Entry<String, Bitmap> eldest) {
+            return size() > 24;
+        }
+    };
+
+    private void applyContinueTab() {
+        nav.button(2).setVisibility(prefs.continueOn() ? View.VISIBLE : View.GONE);
+    }
+
+    private LinearLayout buildContinuePage() {
+        LinearLayout page = new LinearLayout(this);
+        page.setOrientation(LinearLayout.VERTICAL);
+        page.setClipChildren(false);
+        TextView title = text("Continue watching", 34, palette.onSurface, 760);
+        title.setPadding(dp(4), dp(28), 0, dp(8));
+        page.addView(title);
+        continueMessage = text("", 18, palette.onSurfaceVariant, 500);
+        continueMessage.setPadding(dp(4), dp(12), dp(40), dp(12));
+        continueMessage.setVisibility(View.GONE);
+        page.addView(continueMessage);
+        continueAllow = text("Allow access", 16, palette.onPrimary, 600);
+        continueAllow.setGravity(Gravity.CENTER);
+        continueAllow.setPadding(dp(24), dp(12), dp(24), dp(12));
+        continueAllow.setFocusable(true);
+        continueAllow.setClickable(true);
+        GradientDrawable pill = new GradientDrawable();
+        pill.setCornerRadius(dp(40));
+        pill.setColor(palette.primary);
+        continueAllow.setBackground(pill);
+        continueAllow.setOnFocusChangeListener((v, focused) -> {
+            pill.setColor(focused ? palette.inverseSurface : palette.primary);
+            continueAllow.setTextColor(focused ? palette.inverseOnSurface : palette.onPrimary);
+        });
+        continueAllow.setOnClickListener(v -> requestPermissions(new String[]{WatchNext.PERMISSION}, REQUEST_WATCH_NEXT));
+        continueAllow.setVisibility(View.GONE);
+        page.addView(continueAllow, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        HorizontalScrollView scroller = new HorizontalScrollView(this);
+        scroller.setHorizontalScrollBarEnabled(false);
+        scroller.setClipChildren(false);
+        scroller.setClipToPadding(false);
+        continueRow = new LinearLayout(this);
+        continueRow.setOrientation(LinearLayout.HORIZONTAL);
+        continueRow.setClipChildren(false);
+        continueRow.setPadding(dp(6), dp(24), dp(6), dp(16));
+        scroller.addView(continueRow);
+        page.addView(scroller, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        return page;
+    }
+
+    @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == REQUEST_WATCH_NEXT && showingContinue) refreshContinue();
+    }
+
+    private void showContinue() {
+        showingApps = true;
+        showingContinue = true;
+        homePage.setVisibility(View.GONE);
+        appsPage.setVisibility(View.GONE);
+        continuePage.setVisibility(View.VISIBLE);
+        nav.select(2);
+        if (nowCard != null) nowCard.setVisibility(View.GONE);
+        refreshContinue();
+    }
+
+    private void refreshContinue() {
+        if (checkSelfPermission(WatchNext.PERMISSION) != PackageManager.PERMISSION_GRANTED) {
+            continueRow.removeAllViews();
+            continueMessage.setText("Continue watching reads what your streaming apps offer to pick up where you left off. It stays on this TV.");
+            continueMessage.setVisibility(View.VISIBLE);
+            continueAllow.setVisibility(View.VISIBLE);
+            continueAllow.requestFocus();
+            return;
+        }
+        continueAllow.setVisibility(View.GONE);
+        Set<String> skip = new java.util.HashSet<>(prefs.hidden());
+        skip.add(getPackageName());
+        WatchNext.load(handler, getContentResolver(), skip, items -> {
+            if (!showingContinue) return;
+            continueRow.removeAllViews();
+            if (items == null || items.isEmpty()) {
+                continueMessage.setText(items == null
+                        ? "Could not read Continue watching on this TV."
+                        : "Nothing to continue yet. Apps show up here only if they publish what you were watching; some apps do not.");
+                continueMessage.setVisibility(View.VISIBLE);
+                return;
+            }
+            continueMessage.setVisibility(View.GONE);
+            for (WatchNext.Item item : items) {
+                View card = posterCard(item);
+                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                if (continueRow.getChildCount() > 0) lp.setMarginStart(dp(GAP));
+                continueRow.addView(card, lp);
+            }
+            if (continueRow.getChildCount() > 0) continueRow.getChildAt(0).requestFocus();
+        });
+    }
+
+    /** A 16:9 poster with a thin progress line, the title and the app's name under it. */
+    private View posterCard(WatchNext.Item item) {
+        int w = dp(POSTER_DP);
+        int h = w * 9 / 16;
+        int radius = dp(Focus.MEDIA);
+        LinearLayout holder = new LinearLayout(this);
+        holder.setOrientation(LinearLayout.VERTICAL);
+        holder.setClipChildren(false);
+
+        FrameLayout card = new FrameLayout(this);
+        card.setFocusable(true);
+        card.setClickable(true);
+        GradientDrawable cardShape = new GradientDrawable();
+        cardShape.setCornerRadius(radius);
+        cardShape.setColor(palette.containerHigh);
+        card.setBackground(cardShape);
+        card.setClipToOutline(true);
+        ImageView image = new ImageView(this);
+        image.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        card.addView(image, match());
+        Drawable appArt = null;
+        try {
+            appArt = pm.getApplicationIcon(item.pkg);
+        } catch (PackageManager.NameNotFoundException ignored) {
+        }
+        final Drawable fallback = appArt;
+        if (appArt != null) image.setImageDrawable(appArt);
+        if (item.poster != null) {
+            Bitmap known = posters.get(item.poster);
+            if (known != null) {
+                image.setImageBitmap(known);
+            } else {
+                Photos.image(handler, getContentResolver(), item.poster, w, bitmap -> {
+                    if (bitmap == null) return;
+                    posters.put(item.poster, bitmap);
+                    image.setImageBitmap(bitmap);
+                });
+            }
+        }
+        if (item.duration > 0 && item.position > 0) {
+            float done = Math.min(1f, (float) item.position / item.duration);
+            FrameLayout track = new FrameLayout(this);
+            track.setBackgroundColor(withAlpha(palette.surface, 160));
+            View fill = new View(this);
+            fill.setBackgroundColor(palette.primary);
+            track.addView(fill, new FrameLayout.LayoutParams(Math.max(dp(4), Math.round(w * done)), ViewGroup.LayoutParams.MATCH_PARENT));
+            card.addView(track, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(5), Gravity.BOTTOM));
+        }
+        String label = String.valueOf(appLabel(item.pkg));
+        card.setContentDescription(item.title + ", " + label);
+
+        GradientDrawable ring = new GradientDrawable();
+        ring.setCornerRadius(radius + dp(RING));
+        ring.setColor(Color.TRANSPARENT);
+        FrameLayout ringFrame = new FrameLayout(this);
+        ringFrame.setClipChildren(false);
+        ringFrame.setPadding(dp(RING), dp(RING), dp(RING), dp(RING));
+        ringFrame.setBackground(ring);
+        ringFrame.addView(card, new FrameLayout.LayoutParams(w, h));
+        card.setOnClickListener(v -> launchWatchNext(item));
+        card.setOnFocusChangeListener((v, focused) -> {
+            float scale = focused ? 1.10f : 1f;
+            ringFrame.animate().scaleX(scale).scaleY(scale)
+                    .setInterpolator(Motion.FAST_SPATIAL).setDuration(Motion.FAST_SPATIAL_MS).start();
+            card.setOutlineSpotShadowColor(palette.primary);
+            card.setOutlineAmbientShadowColor(palette.primary);
+            card.animate().translationZ(focused ? dp(14) : 0)
+                    .setInterpolator(Motion.FAST_EFFECTS).setDuration(Motion.DEFAULT_EFFECTS_MS).start();
+            ObjectAnimator corners = ObjectAnimator.ofFloat(cardShape, "cornerRadius", cardShape.getCornerRadius(), focused ? radius * 0.62f : radius)
+                    .setDuration(Motion.FAST_SPATIAL_MS);
+            corners.setInterpolator(Motion.FAST_SPATIAL);
+            corners.start();
+            ring.setCornerRadius((focused ? radius * 0.62f : radius) + dp(RING));
+            fadeRing(ring, focused);
+            if (focused) {
+                Drawable art = image.getDrawable() != null ? image.getDrawable() : fallback;
+                if (art != null) onTileFocused("watch:" + item.pkg + "|" + item.title, item.title, art);
+            }
+        });
+        holder.addView(ringFrame, new LinearLayout.LayoutParams(w + dp(2 * RING), h + dp(2 * RING)));
+        TextView name = text(item.title, 15, palette.onSurface, 600);
+        name.setSingleLine(true);
+        name.setEllipsize(TextUtils.TruncateAt.END);
+        name.setPadding(dp(RING), dp(8), dp(RING), 0);
+        holder.addView(name, new LinearLayout.LayoutParams(w + dp(2 * RING), ViewGroup.LayoutParams.WRAP_CONTENT));
+        TextView from = text(label, 13, palette.onSurfaceVariant, 500);
+        from.setSingleLine(true);
+        from.setPadding(dp(RING), dp(2), dp(RING), 0);
+        holder.addView(from, new LinearLayout.LayoutParams(w + dp(2 * RING), ViewGroup.LayoutParams.WRAP_CONTENT));
+        return holder;
+    }
+
+    /** Opens the item the app published; only for that app, and the app's own launch intent when it gave none. */
+    private void launchWatchNext(WatchNext.Item item) {
+        Intent intent = null;
+        try {
+            if (item.intentUri != null) intent = Intent.parseUri(item.intentUri, Intent.URI_INTENT_SCHEME);
+        } catch (java.net.URISyntaxException ignored) {
+        }
+        if (intent != null) {
+            intent.setSelector(null);
+            ComponentName target = intent.getComponent();
+            if (target != null && !target.getPackageName().equals(item.pkg)) intent = null;
+            else if (target == null) intent.setPackage(item.pkg);
+        }
+        if (intent == null || pm.resolveActivity(intent, 0) == null) intent = launchIntent(item.pkg);
+        if (intent != null) launch(intent);
+    }
+
     // ---- pages ----
 
     private void showHome() {
         showingApps = false;
+        showingContinue = false;
         appsPage.setVisibility(View.GONE);
+        continuePage.setVisibility(View.GONE);
         homePage.setVisibility(View.VISIBLE);
         nav.select(0);
         if (nowCard != null) showNowPlaying();
@@ -1327,6 +1561,8 @@ public class HomeActivity extends Activity {
 
     private void showApps() {
         showingApps = true;
+        showingContinue = false;
+        continuePage.setVisibility(View.GONE);
         fillApps();
         homePage.setVisibility(View.GONE);
         appsPage.setVisibility(View.VISIBLE);

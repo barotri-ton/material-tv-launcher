@@ -32,6 +32,9 @@ S cmd notification allow_listener "$PKG/$PKG.MediaListener"
 # Dock order: per-app screen time, read on the TV only.
 S cmd appops set "$PKG" GET_USAGE_STATS allow
 
+# Continue tab: read what apps offer under Continue watching (only used if you turn the tab on).
+S pm grant "$PKG" android.permission.READ_TV_LISTINGS || true
+
 # Home button: Google TV ignores other home apps, so a small accessibility service sends the Home button here.
 # Added to (not replacing) any accessibility services already on.
 SVC="$PKG/$PKG.HomeKeyService"

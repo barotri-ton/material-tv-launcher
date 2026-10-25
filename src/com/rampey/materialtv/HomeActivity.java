@@ -4,6 +4,7 @@ import android.animation.ArgbEvaluator;
 import android.animation.ObjectAnimator;
 import android.animation.ValueAnimator;
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.app.PendingIntent;
 import android.content.ActivityNotFoundException;
 import android.content.ComponentName;
@@ -46,6 +47,7 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.Space;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import java.io.File;
 import java.nio.charset.StandardCharsets;
@@ -260,7 +262,21 @@ public class HomeActivity extends Activity {
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
         pm = getPackageManager();
+        prefs = new Prefs(this);
         setContentView(buildRoot());
+        openStartApp();
+    }
+
+    private Prefs prefs;
+    private static final long START_APP_DELAY_MS = 1200;
+
+    /** Once per boot: the app chosen in Launcher settings opens over Home, which stays one Back or Home press away. */
+    private void openStartApp() {
+        int boot = Settings.Global.getInt(getContentResolver(), Settings.Global.BOOT_COUNT, 0);
+        if (!prefs.firstHomeSinceBoot(boot)) return;
+        String pkg = prefs.startApp();
+        Intent intent = pkg != null ? launchIntent(pkg) : null;
+        if (intent != null) handler.postDelayed(() -> launch(intent), START_APP_DELAY_MS);
     }
 
     @Override protected void onResume() {
@@ -269,10 +285,10 @@ public class HomeActivity extends Activity {
         if (showingApps) fillApps();
         handler.removeCallbacks(tick);
         handler.post(tick);
-        drifting = true;
+        drifting = !prefs.reducedMotion();
         driftLast = 0;
         shape.removeCallbacks(drift);
-        shape.postOnAnimation(drift);
+        if (drifting) shape.postOnAnimation(drift);
         // Build the Apps page quietly once Home is showing, so opening it later is instant.
         handler.removeCallbacks(prebuildApps);
         handler.postDelayed(prebuildApps, 1500);
@@ -378,7 +394,7 @@ public class HomeActivity extends Activity {
         appsTitle.setPadding(dp(4), dp(28), 0, dp(8));
         appsColumn.addView(appsTitle);
         appsGrid = new GridLayout(this);
-        appsGrid.setColumnCount(5);
+        appsGrid.setColumnCount(prefs.columns());
         appsGrid.setClipChildren(false);
         appsGrid.setPadding(0, dp(12), 0, dp(32));
         appsColumn.addView(appsGrid);
@@ -415,6 +431,10 @@ public class HomeActivity extends Activity {
                     else launch(new Intent(Settings.ACTION_SETTINGS));
                 });
         nav.select(0);
+        nav.button(2).setOnLongClickListener(v -> {
+            showLauncherSettings();
+            return true;
+        });
         bar.addView(nav, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.END | Gravity.TOP));
         return bar;
     }
@@ -467,6 +487,10 @@ public class HomeActivity extends Activity {
     /** The dock: most-used apps of the last 14 days (left = most used), topped up from the TV's other installed apps. */
     private List<String> dockApps() {
         List<String> out = new ArrayList<>();
+        // Apps pinned from the tile menu come first, in the order they were arranged.
+        for (String pkg : prefs.pinned()) {
+            if (out.size() < DOCK_SIZE && launchIntent(pkg) != null && !out.contains(pkg)) out.add(pkg);
+        }
         // Screensaver apps rack up "use" while the screensaver runs: they never count toward the dock.
         java.util.Set<String> screensavers = new java.util.HashSet<>();
         for (ResolveInfo r : pm.queryIntentServices(new Intent("android.service.dreams.DreamService"), 0))
@@ -479,7 +503,7 @@ public class HomeActivity extends Activity {
             for (android.app.usage.UsageStats u : used) {
                 if (out.size() >= DOCK_SIZE || u.getTotalTimeInForeground() < 60_000) break;
                 String pkg = u.getPackageName();
-                if (pkg.equals(getPackageName()) || NOT_IN_DOCK.contains(pkg) || screensavers.contains(pkg) || launchIntent(pkg) == null) continue;
+                if (pkg.equals(getPackageName()) || out.contains(pkg) || NOT_IN_DOCK.contains(pkg) || screensavers.contains(pkg) || launchIntent(pkg) == null) continue;
                 out.add(pkg);
             }
         } catch (RuntimeException ignored) {
@@ -630,9 +654,13 @@ public class HomeActivity extends Activity {
             dock.addView(tile, lp);
             arrive(tile, i++);
         }
-        if (!showingApps && dock.getChildCount() > 0) dock.getChildAt(0).requestFocus();
+        int back = refocusPkg != null ? present.indexOf(refocusPkg) : -1;
+        refocusPkg = null;
+        if (!showingApps && dock.getChildCount() > 0) dock.getChildAt(Math.max(0, back)).requestFocus();
         updateBadges();
     }
+
+    private String refocusPkg;
 
     private void fillApps() {
         Set<String> seen = new LinkedHashSet<>();
@@ -645,7 +673,8 @@ public class HomeActivity extends Activity {
             }
         }
         // The grid is kept between visits; rebuild only when the set of installed apps changed.
-        String key = TextUtils.join(",", seen);
+        appsGrid.setColumnCount(prefs.columns());
+        String key = prefs.columns() + ":" + TextUtils.join(",", seen);
         if (key.equals(appsKey) && appsGrid.getChildCount() > 0) return;
         appsKey = key;
         appsGrid.removeAllViews();
@@ -734,6 +763,10 @@ public class HomeActivity extends Activity {
         loader.setVisibility(View.GONE);
         ringFrame.addView(loader, new FrameLayout.LayoutParams(dp(48), dp(48), Gravity.CENTER));
         card.setOnClickListener(v -> pressAndLaunch(ringFrame, loader, loaderShape, intent));
+        if (device == null) card.setOnLongClickListener(v -> {
+            showTileMenu(pkg, label);
+            return true;
+        });
 
         TextView caption = text(label, inDock ? 15 : 14, palette.onSurfaceVariant, 560);
         caption.setGravity(Gravity.CENTER_HORIZONTAL);
@@ -1009,6 +1042,113 @@ public class HomeActivity extends Activity {
             startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
         } catch (ActivityNotFoundException | SecurityException ignored) {
         }
+    }
+
+    // ---- tile menu and launcher settings ----
+
+    /** Hold OK on a tile: pin it to the dock, arrange the pinned apps, or open its app info. */
+    private void showTileMenu(String pkg, CharSequence label) {
+        List<String> pinned = prefs.pinned();
+        int at = pinned.indexOf(pkg);
+        List<String> items = new ArrayList<>();
+        List<Runnable> actions = new ArrayList<>();
+        if (at < 0) {
+            items.add("Pin to dock");
+            actions.add(() -> {
+                if (pinned.size() >= DOCK_SIZE) {
+                    Toast.makeText(this, "The dock holds " + DOCK_SIZE + " pinned apps. Unpin one first.", Toast.LENGTH_SHORT).show();
+                    return;
+                }
+                pinned.add(pkg);
+                savePinned(pinned, pkg);
+            });
+        } else {
+            items.add("Unpin from dock");
+            actions.add(() -> {
+                pinned.remove(pkg);
+                savePinned(pinned, null);
+            });
+            if (at > 0) {
+                items.add("Move left");
+                actions.add(() -> {
+                    Collections.swap(pinned, at, at - 1);
+                    savePinned(pinned, pkg);
+                });
+            }
+            if (at < pinned.size() - 1) {
+                items.add("Move right");
+                actions.add(() -> {
+                    Collections.swap(pinned, at, at + 1);
+                    savePinned(pinned, pkg);
+                });
+            }
+        }
+        items.add("App info");
+        actions.add(() -> launch(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", pkg, null))));
+        new AlertDialog.Builder(this)
+                .setTitle(label)
+                .setItems(items.toArray(new String[0]), (d, which) -> actions.get(which).run())
+                .show();
+    }
+
+    private void savePinned(List<String> pinned, String focusPkg) {
+        prefs.setPinned(pinned);
+        refocusPkg = focusPkg;
+        dockKey = null;
+        fillDock();
+    }
+
+    /** Hold OK on Settings: the launcher's own choices. */
+    private void showLauncherSettings() {
+        String startApp = prefs.startApp();
+        String[] items = {
+                "Animations: " + (prefs.reducedMotion() ? "Off" : "On"),
+                "Apps per row: " + prefs.columns(),
+                "Open on start: " + (startApp != null && launchIntent(startApp) != null ? appLabel(startApp) : "Off"),
+        };
+        new AlertDialog.Builder(this)
+                .setTitle("Launcher settings")
+                .setItems(items, (d, which) -> {
+                    if (which == 0) {
+                        prefs.setReducedMotion(!prefs.reducedMotion());
+                        drifting = !prefs.reducedMotion();
+                        shape.removeCallbacks(drift);
+                        if (drifting && foreground) {
+                            driftLast = 0;
+                            shape.postOnAnimation(drift);
+                        }
+                        showLauncherSettings();
+                    } else if (which == 1) {
+                        int next = prefs.columns() + 1;
+                        prefs.setColumns(next > Prefs.MAX_COLUMNS ? Prefs.MIN_COLUMNS : next);
+                        showLauncherSettings();
+                    } else {
+                        chooseStartApp();
+                    }
+                })
+                .show();
+    }
+
+    private void chooseStartApp() {
+        List<String> pkgs = new ArrayList<>();
+        Map<String, String> names = new HashMap<>();
+        for (ResolveInfo info : pm.queryIntentActivities(new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LEANBACK_LAUNCHER), 0)) {
+            String pkg = info.activityInfo.packageName;
+            if (pkg.equals(getPackageName()) || names.containsKey(pkg)) continue;
+            names.put(pkg, String.valueOf(info.loadLabel(pm)));
+            pkgs.add(pkg);
+        }
+        Collections.sort(pkgs, (a, b) -> names.get(a).compareToIgnoreCase(names.get(b)));
+        String[] labels = new String[pkgs.size() + 1];
+        labels[0] = "Off (open Home)";
+        for (int i = 0; i < pkgs.size(); i++) labels[i + 1] = names.get(pkgs.get(i));
+        new AlertDialog.Builder(this)
+                .setTitle("Open on start")
+                .setItems(labels, (d, which) -> {
+                    prefs.setStartApp(which == 0 ? null : pkgs.get(which - 1));
+                    showLauncherSettings();
+                })
+                .show();
     }
 
     // ---- pages ----

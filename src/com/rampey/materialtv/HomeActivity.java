@@ -364,6 +364,17 @@ public class HomeActivity extends Activity {
         backdrop = new GradientDrawable(GradientDrawable.Orientation.TL_BR, new int[]{palette.surfaceBright, palette.surface});
         root.setBackground(backdrop);
 
+        // An optional photo (Launcher settings -> Wallpaper) under a scrim in the palette's surface color.
+        wallpaperView = new ImageView(this);
+        wallpaperView.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        wallpaperView.setVisibility(View.GONE);
+        root.addView(wallpaperView, match());
+        wallpaperScrim = new View(this);
+        wallpaperScrim.setBackgroundColor(withAlpha(palette.surface, WALLPAPER_DIM));
+        wallpaperScrim.setVisibility(View.GONE);
+        root.addView(wallpaperScrim, match());
+        applyWallpaper();
+
         // One Expressive "cookie" shape behind everything, drifting slowly and turning a little more when focus
         // moves. It sits on its own GPU layer, so each step only moves the layer; nothing is redrawn.
         cookie = new CookieDrawable(palette.primaryContainer, 9, 0.08f);
@@ -1072,12 +1083,49 @@ public class HomeActivity extends Activity {
             int top = (int) argb.evaluate(t, from.surfaceBright, next.surfaceBright);
             int bottom = (int) argb.evaluate(t, from.surface, next.surface);
             backdrop.setColors(new int[]{top, bottom});
+            wallpaperScrim.setBackgroundColor(withAlpha(bottom, WALLPAPER_DIM));
             cookie.setColor((int) argb.evaluate(t, from.primaryContainer, next.primaryContainer));
             dockShape.setColor(withAlpha((int) argb.evaluate(t, from.container, next.container), 0xB3));
         });
         colorAnimator.start();
         nav.setPalette(next);
         styleNowPlaying();
+    }
+
+    private ImageView wallpaperView;
+    private View wallpaperScrim;
+    private static final int WALLPAPER_DIM = 0xA6;
+
+    /** Shows the chosen bundled photo behind everything (decoded off the main thread), or just the colors. */
+    private void applyWallpaper() {
+        String file = prefs.wallpaper();
+        if (file == null) {
+            wallpaperView.setImageBitmap(null);
+            wallpaperView.setVisibility(View.GONE);
+            wallpaperScrim.setVisibility(View.GONE);
+            return;
+        }
+        Photos.asset(handler, getAssets(), Wallpapers.path(file), bitmap -> {
+            if (bitmap == null || !file.equals(prefs.wallpaper())) return;
+            wallpaperView.setImageBitmap(bitmap);
+            wallpaperView.setVisibility(View.VISIBLE);
+            wallpaperScrim.setVisibility(View.VISIBLE);
+        });
+    }
+
+    private void chooseWallpaper() {
+        List<String> files = Wallpapers.files(getAssets());
+        String[] labels = new String[files.size() + 1];
+        labels[0] = "Off (colors only)";
+        for (int i = 0; i < files.size(); i++) labels[i + 1] = Wallpapers.label(files.get(i));
+        new AlertDialog.Builder(this)
+                .setTitle("Wallpaper")
+                .setItems(labels, (d, which) -> {
+                    prefs.setWallpaper(which == 0 ? null : files.get(which - 1));
+                    applyWallpaper();
+                    showLauncherSettings();
+                })
+                .show();
     }
 
     /** After the color theme changed: the fixed palette now, or the focused app's colors again. */
@@ -1220,6 +1268,9 @@ public class HomeActivity extends Activity {
             prefs.setColumns(next > Prefs.MAX_COLUMNS ? Prefs.MIN_COLUMNS : next);
             showLauncherSettings();
         });
+        String wallpaper = prefs.wallpaper();
+        items.add("Wallpaper: " + (wallpaper != null ? Wallpapers.label(wallpaper) : "Off"));
+        actions.add(this::chooseWallpaper);
         items.add("Colors: " + Prefs.COLOR_NAMES[prefs.colorTheme()]);
         actions.add(() -> {
             prefs.setColorTheme((prefs.colorTheme() + 1) % Prefs.COLOR_NAMES.length);
@@ -1260,9 +1311,9 @@ public class HomeActivity extends Activity {
             if (!prefs.continueOn() && showingContinue) showHome();
             showLauncherSettings();
         });
-        items.add("Screensaver photos: " + (prefs.photosOn() ? "On (needs the internet)" : "Off"));
+        items.add("Screensaver photos: " + new String[]{"Off", "Online (needs the internet)", "Wallpapers (offline)"}[prefs.photosMode()]);
         actions.add(() -> {
-            prefs.setPhotosOn(!prefs.photosOn());
+            prefs.setPhotosMode((prefs.photosMode() + 1) % 3);
             showLauncherSettings();
         });
         items.add("Reset launcher settings");
@@ -1272,6 +1323,7 @@ public class HomeActivity extends Activity {
                 .setPositiveButton("Reset", (d, w) -> {
                     prefs.resetSettings();
                     applyColorTheme();
+                    applyWallpaper();
                     drifting = true;
                     shape.removeCallbacks(drift);
                     if (foreground) {

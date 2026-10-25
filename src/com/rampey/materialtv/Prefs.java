@@ -56,12 +56,26 @@ final class Prefs {
     }
 
     /** Screensaver shows random online photos instead of the generated shapes. */
-    boolean photosOn() {
-        return sp.getBoolean("photos", false);
+    /** Screensaver photos: 0 off (generated shapes), 1 random online photos, 2 the bundled wallpapers (offline). */
+    int photosMode() {
+        return sp.contains("photos_mode") ? sp.getInt("photos_mode", 0) : (sp.getBoolean("photos", false) ? 1 : 0);
     }
 
-    void setPhotosOn(boolean on) {
-        sp.edit().putBoolean("photos", on).apply();
+    void setPhotosMode(int mode) {
+        sp.edit().putInt("photos_mode", mode).apply();
+    }
+
+    boolean photosOn() {
+        return photosMode() != 0;
+    }
+
+    /** The bundled photo behind Home (a file name under assets/wallpapers), or null for colors only. */
+    String wallpaper() {
+        return sp.getString("wallpaper", null);
+    }
+
+    void setWallpaper(String file) {
+        sp.edit().putString("wallpaper", file).apply();
     }
 
     // ---- folders (groups of apps on the Apps page) ----
@@ -228,7 +242,7 @@ final class Prefs {
     /** Every choice back to how it came; pinned and hidden apps stay. */
     void resetSettings() {
         SharedPreferences.Editor e = sp.edit();
-        for (String key : new String[]{"reduced_motion", "columns", "clock_mode", "start_app", "fahrenheit", "photos", "continue", "recent", "color_theme", "weather_city", "weather_lat",
+        for (String key : new String[]{"reduced_motion", "columns", "clock_mode", "start_app", "fahrenheit", "photos", "photos_mode", "wallpaper", "continue", "recent", "color_theme", "weather_city", "weather_lat",
                 "weather_lon", "weather_text", "weather_at"}) e.remove(key);
         e.apply();
     }

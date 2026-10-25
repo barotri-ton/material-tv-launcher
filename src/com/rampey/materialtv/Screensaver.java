@@ -130,7 +130,7 @@ public class Screensaver extends DreamService {
 
     private final Runnable nextPhoto = new Runnable() {
         @Override public void run() {
-            Photos.fetch(handler, bitmap -> {
+            Weather.Callback<android.graphics.Bitmap> got = bitmap -> {
                 if (!running) return;
                 if (bitmap == null) {
                     if (!photoShown) startScenes();             // offline: the shapes, as without photos
@@ -139,7 +139,19 @@ public class Screensaver extends DreamService {
                 }
                 showPhoto(bitmap);
                 handler.postDelayed(nextPhoto, PHOTO_EVERY);
-            });
+            };
+            if (prefs.photosMode() == 2) {
+                // The bundled wallpapers: offline, a different one each time.
+                java.util.List<String> files = Wallpapers.files(getAssets());
+                if (files.isEmpty()) {
+                    got.done(null);
+                    return;
+                }
+                String next = files.get((int) (System.currentTimeMillis() / PHOTO_EVERY % files.size()));
+                Photos.asset(handler, getAssets(), Wallpapers.path(next), got);
+            } else {
+                Photos.fetch(handler, got);
+            }
         }
     };
 

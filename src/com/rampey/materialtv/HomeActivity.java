@@ -1109,12 +1109,25 @@ public class HomeActivity extends Activity {
             Toast.makeText(this, label + " hidden. Show it again in Launcher settings.", Toast.LENGTH_LONG).show();
             refreshApps();
         });
+        if (canUninstall(pkg)) {
+            items.add("Uninstall");
+            actions.add(() -> launch(new Intent(Intent.ACTION_DELETE, Uri.fromParts("package", pkg, null))));
+        }
         items.add("App info");
         actions.add(() -> launch(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", pkg, null))));
         new AlertDialog.Builder(this)
                 .setTitle(label)
                 .setItems(items.toArray(new String[0]), (d, which) -> actions.get(which).run())
                 .show();
+    }
+
+    /** Apps the user installed; system apps cannot be uninstalled (Android would only offer to disable them). */
+    private boolean canUninstall(String pkg) {
+        try {
+            return (pm.getApplicationInfo(pkg, 0).flags & ApplicationInfo.FLAG_SYSTEM) == 0;
+        } catch (PackageManager.NameNotFoundException e) {
+            return false;
+        }
     }
 
     /** The dock and the Apps page again, after pinned or hidden apps changed. */

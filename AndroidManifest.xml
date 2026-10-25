@@ -29,6 +29,9 @@
     <!-- The optional Continue tab: what the TV's apps offer under Continue watching (Watch Next). -->
     <uses-permission android:name="android.permission.READ_TV_LISTINGS" />
 
+    <!-- The tile menu's Uninstall: opens Android's own confirmation for apps the user installed. -->
+    <uses-permission android:name="android.permission.REQUEST_DELETE_PACKAGES" />
+
     <application
         android:label="Material TV Launcher"
         android:icon="@drawable/icon"

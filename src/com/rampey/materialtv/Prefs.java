@@ -75,7 +75,37 @@ final class Prefs {
     }
 
     void setWallpaper(String file) {
-        sp.edit().putString("wallpaper", file).apply();
+        sp.edit().putString("wallpaper", file).remove("wallpaper_now").remove("wallpaper_at").apply();
+    }
+
+    /** The wallpaper setting that shuffles the bundled photos (see wallpaperEvery). */
+    static final String RANDOM_WALLPAPER = "random";
+    /** How often a random wallpaper changes, in minutes. */
+    static final int[] WALLPAPER_EVERY = {15, 30, 60, 180, 720, 1440};
+
+    boolean randomWallpaper() {
+        return RANDOM_WALLPAPER.equals(wallpaper());
+    }
+
+    int wallpaperEvery() {
+        return sp.getInt("wallpaper_every", 60);
+    }
+
+    void setWallpaperEvery(int minutes) {
+        sp.edit().putInt("wallpaper_every", minutes).apply();
+    }
+
+    /** The photo a random wallpaper shows right now, and since when. */
+    String wallpaperNow() {
+        return sp.getString("wallpaper_now", null);
+    }
+
+    long wallpaperAt() {
+        return sp.getLong("wallpaper_at", 0);
+    }
+
+    void setWallpaperNow(String file) {
+        sp.edit().putString("wallpaper_now", file).putLong("wallpaper_at", System.currentTimeMillis()).apply();
     }
 
     // ---- folders (groups of apps on the Apps page) ----
@@ -191,31 +221,63 @@ final class Prefs {
         sp.edit().remove("recent").apply();
     }
 
-    // ---- weather (off until a city is set) ----
+    // ---- weather (on by default: a city the user typed, else the TV's own location, else a guess from its IP) ----
 
     boolean weatherOn() {
+        return !sp.getBoolean("weather_off", false);
+    }
+
+    void setWeatherOn(boolean on) {
+        SharedPreferences.Editor e = sp.edit().putBoolean("weather_off", !on);
+        if (!on) e.remove("weather_city").remove("weather_lat").remove("weather_lon").remove("weather_text").remove("weather_at")
+                .remove("auto_city").remove("auto_lat").remove("auto_lon").remove("auto_at");
+        e.apply();
+    }
+
+    /** A city typed in Weather settings; otherwise the place is found automatically. */
+    boolean weatherManual() {
         return sp.contains("weather_lat");
     }
 
+    /** Where the weather is for: the typed city, else the last automatic place; false when neither is known yet. */
+    boolean weatherKnown() {
+        return weatherManual() || sp.contains("auto_lat");
+    }
+
     String weatherCity() {
-        return sp.getString("weather_city", "");
+        return weatherManual() ? sp.getString("weather_city", "") : sp.getString("auto_city", "");
     }
 
     double weatherLat() {
-        return Double.longBitsToDouble(sp.getLong("weather_lat", 0));
+        return Double.longBitsToDouble(sp.getLong(weatherManual() ? "weather_lat" : "auto_lat", 0));
     }
 
     double weatherLon() {
-        return Double.longBitsToDouble(sp.getLong("weather_lon", 0));
+        return Double.longBitsToDouble(sp.getLong(weatherManual() ? "weather_lon" : "auto_lon", 0));
     }
 
     void setWeatherPlace(String city, double lat, double lon) {
-        sp.edit().putString("weather_city", city).putLong("weather_lat", Double.doubleToLongBits(lat))
+        sp.edit().putBoolean("weather_off", false).putString("weather_city", city).putLong("weather_lat", Double.doubleToLongBits(lat))
                 .putLong("weather_lon", Double.doubleToLongBits(lon)).remove("weather_text").remove("weather_at").apply();
     }
 
-    void clearWeather() {
-        sp.edit().remove("weather_city").remove("weather_lat").remove("weather_lon").remove("weather_text").remove("weather_at").apply();
+    /** Back to finding the place automatically (the typed city is forgotten). */
+    void useAutoPlace() {
+        sp.edit().remove("weather_city").remove("weather_lat").remove("weather_lon").remove("weather_text").remove("weather_at")
+                .remove("auto_at").apply();
+    }
+
+    long autoPlaceAt() {
+        return sp.getLong("auto_at", 0);
+    }
+
+    void setAutoPlace(String city, double lat, double lon) {
+        boolean moved = Math.abs(lat - weatherLat()) > 0.05 || Math.abs(lon - weatherLon()) > 0.05;
+        SharedPreferences.Editor e = sp.edit().putString("auto_city", city == null ? "" : city)
+                .putLong("auto_lat", Double.doubleToLongBits(lat)).putLong("auto_lon", Double.doubleToLongBits(lon))
+                .putLong("auto_at", System.currentTimeMillis());
+        if (moved && !weatherManual()) e.remove("weather_text").remove("weather_at");
+        e.apply();
     }
 
     boolean fahrenheit() {
@@ -242,8 +304,8 @@ final class Prefs {
     /** Every choice back to how it came; pinned and hidden apps stay. */
     void resetSettings() {
         SharedPreferences.Editor e = sp.edit();
-        for (String key : new String[]{"reduced_motion", "columns", "clock_mode", "start_app", "fahrenheit", "photos", "photos_mode", "wallpaper", "continue", "recent", "color_theme", "weather_city", "weather_lat",
-                "weather_lon", "weather_text", "weather_at"}) e.remove(key);
+        for (String key : new String[]{"reduced_motion", "columns", "clock_mode", "start_app", "fahrenheit", "photos", "photos_mode", "wallpaper", "wallpaper_every", "wallpaper_now", "wallpaper_at","continue", "recent", "color_theme", "weather_city", "weather_lat",
+                "weather_lon", "weather_text", "weather_at", "weather_off", "auto_city", "auto_lat", "auto_lon", "auto_at"}) e.remove(key);
         e.apply();
     }
 

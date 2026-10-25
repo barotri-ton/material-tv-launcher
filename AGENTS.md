@@ -6,11 +6,11 @@ Installation, build and troubleshooting details also live here; keep the README 
 ## What this is
 
 A buttery smooth launcher for Android TV / Google TV: the user's most-used apps, colors that follow the focused app,
-Material 3 Expressive design. It is **only a launcher**: no debloat tooling, no AI, no tracking. It goes online only for two optional features (weather, screensaver photos) that are off until the user turns them on.
+Material 3 Expressive design. It is **only a launcher**: no debloat tooling, no AI, no tracking. It goes online only for the weather (on by default) and screensaver photos (off until the user turns them on).
 
 ## Hard rules
 
-- **Online only for the two optional features.** `INTERNET` is there for weather (Open-Meteo: the city the user typed, then its coordinates) and screensaver photos (picsum.photos: a size only). Both are off by default, send nothing that identifies the TV or user, and never send anything the app reads on the TV (apps, usage, what plays). No other network use.
+- **Online only for weather and screensaver photos.** `INTERNET` is there for weather (Open-Meteo: a typed city, then coordinates; with no city, the TV's rough location or, failing that, an ipwho.is lookup of the home's IP every 6 h) and screensaver photos (picsum.photos: a size only). Weather is on by default and can be turned off; photos are off by default. Neither sends anything the app reads on the TV (apps, usage, what plays). No other network use.
 - **Nothing user-specific in code.** The dock comes from on-device usage stats and installed apps; HDMI devices come
   from HDMI-CEC names. No hardcoded app lists, TV models, IPs or names.
 - **No brand logos we don't own.** Console tiles use Material icons on a tone of the brand hue, never a logo.
@@ -45,11 +45,17 @@ nav fill with `inverseSurface` on focus.
 **Type**: Google Sans Flex with `'ROND' 0` (never rounded), `opsz` 24 for UI and 48 for display. The focused app
 name settles into its weight; the clock's weight follows the time of day and swells briefly on each new minute.
 
-**Components**: top-bar strip (`ButtonGroup`: 30 dp outer radius, 5 dp padding, 4 dp tab gaps, 24 dp tab radii).
+**Components**: top-bar strip (`ButtonGroup`: 30 dp outer radius, 5 dp padding, 4 dp tab gaps, round icon-only tabs
+with the page name as content description).
 The selected page has a `primary/onPrimary` pill; focused tabs use `inverseSurface/inverseOnSurface` and scale 1.05;
 inactive tabs are transparent. Fills fade as focus and selection change. Now Playing uses a wavy progress indicator
 (`WavyProgress`: moving wave while playing, flat when paused, grows in from a flat line); a morphing shape loader
 appears when an app takes over 300 ms to open.
+
+**Launcher Manager** (`ManagerPage`): every launcher setting on one page, opened by holding OK on **Settings** or
+from Quick panel → Preferences. Categories on the left (focus selects), rows with their current value on the right;
+it also picks dock apps, hides apps in bulk and edits folders. Wallpaper can be **Random**: another bundled photo every
+15 min to 1 day, checked only while Home is up.
 
 **Status marks go under the tile, never on the artwork**: the playing app gets an animated equalizer
 (`EqualizerBadge`), an HDMI device that's on gets a green dot (Material green, tone 80). When the tile is focused,
@@ -62,7 +68,11 @@ a new arrangement every hour, drawn on display frames.
 ## Layout
 
 960 × 540 dp canvas (TV baseline), 48 dp side margins (5% overscan safe area). Dock of six 16:9 tiles that exactly
-fill the width; Now Playing card 380 dp on the right.
+fill the width, on a see-through panel with a 1 dp light edge; Now Playing card 380 dp on the right.
+**Hero**: the focused item's art fills the screen behind Home under a scrim darkening toward the left and bottom,
+cross-fading on focus. A poster shows as is; an app's banner is drawn into 16 × 9 pixels and scaled up, a soft wash
+of its colors (never a real blur: too heavy for the target TVs). A chosen wallpaper replaces the hero. Home scrolls: a Continue watching row (when that tab
+is on) peeks 34 dp under the dock and scrolls up when focused.
 
 ## Commits
 
@@ -125,10 +135,12 @@ It starts after the TV's idle time (`adb shell settings get system screen_off_ti
 
 ## Privacy
 
-The launcher itself never goes online. `INTERNET` is used only by two optional features, off until you turn them on in
-Launcher settings (hold OK on **Settings**): weather sends the city you typed and then its coordinates to
-[Open-Meteo](https://open-meteo.com/); screensaver photos request a random photo of a given size from
-[picsum.photos](https://picsum.photos/) (photos from Unsplash). Nothing the app reads on the TV is sent anywhere. The optional **Continue** tab (off by default) reads what your apps
+`INTERNET` is used only by the weather and the screensaver photos. **Weather is on by default** (turn it off under
+Launcher settings → Weather, hold OK on **Settings**): with a city typed, it sends that city and then its coordinates to
+[Open-Meteo](https://open-meteo.com/); with none, it uses the TV's rough location (`ACCESS_COARSE_LOCATION`) if the TV
+has one, and otherwise asks [ipwho.is](https://ipwho.is/) once every 6 hours for the city near your home's public IP,
+then sends those coordinates to Open-Meteo. Screensaver photos (off until you turn them on) request a random photo of a
+given size from [picsum.photos](https://picsum.photos/) (photos from Unsplash). Nothing the app reads on the TV is sent anywhere. The optional **Continue** tab (off by default) reads what your apps
 publish under Continue watching and keeps a short list of what you played (title, app, position; up to 12, on the TV only,
 clearable in Launcher settings), only while the tab is on; a poster that is an https address loads from the address that app gave,
 which shows that app's image server your TV's address, as the app itself would. Check the
@@ -140,6 +152,7 @@ permissions yourself: `aapt2 dump permissions material-tv-launcher.apk` (`aapt2`
 | Usage access | To order the dock by how much you use each app. |
 | Continue watching (`READ_TV_LISTINGS`) | Granted by `install.sh`, used only if you turn the **Continue** tab on: it reads the Watch Next entries your apps publish on the TV. |
 | Notification access (*Now Playing*) | To see which app is playing. It reads no notifications ([code](src/com/rampey/materialtv/MediaListener.java)). |
+| `DUMP`, low-RAM TVs only (*Now Playing*) | Android 9 ignores notification access on low-RAM TVs, so there the launcher reads `dumpsys media_session` instead: app, title, subtitle, play state and position, on the TV only ([code](src/com/rampey/materialtv/SessionDump.java)). |
 
 ## Build it yourself
 
@@ -175,7 +188,9 @@ elsewhere. The code is plain Java:
   boot, then this launcher takes over.
 - **`adb` says unauthorized.** Accept the **Allow USB debugging?** prompt on the TV and run the script again.
 - **No Now Playing card.** The app has to publish what it's playing. Some apps also stop playing as soon as you
-  leave them.
+  leave them. On a low-RAM TV (`adb shell getprop ro.config.low_ram` says `true`) Android never turns notification
+  access on; `install.sh` grants `DUMP` there instead (`adb shell pm grant com.rampey.materialtv android.permission.DUMP`).
+  That way has no album art or length, and play/pause presses the remote's play/pause key.
 - **No console tile.** Your console has to announce itself over HDMI-CEC. Turn on HDMI-CEC (your TV may call it
   "HDMI Device Control" or a brand name ending in Sync or Link) on both the TV and the console.
 

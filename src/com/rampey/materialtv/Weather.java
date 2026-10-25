@@ -15,8 +15,10 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
- * Weather from Open-Meteo (no account, no key). The only things that leave the TV are the city name the user typed
- * and, afterwards, that city's coordinates; nothing identifies the TV or the user. Off until a city is set.
+ * Weather from Open-Meteo (no account, no key). What leaves the TV: a city name the user typed and that city's
+ * coordinates; or, with no city typed, the coordinates of the TV's own location, and when the TV has no location
+ * (most TVs and projectors: no GPS, no network location) one request to ipwho.is, which sees the home's public IP and
+ * answers with a nearby city. On by default; turned off in Weather settings.
  */
 final class Weather {
     private Weather() {
@@ -58,6 +60,53 @@ final class Weather {
                             r.getDouble("latitude"), r.getDouble("longitude"));
                 }
             } catch (Exception ignored) {
+            }
+            Place found = place;
+            ui.post(() -> cb.done(found));
+        });
+    }
+
+    /**
+     * Where the TV is: Android's last known location when the app may read it (any provider, newest first), named
+     * with the Geocoder when the TV has one; otherwise a guess from the public IP (ipwho.is). Null when neither works.
+     */
+    static void locate(android.content.Context ctx, Handler ui, Callback<Place> cb) {
+        android.location.Location best = null;
+        if (ctx.checkSelfPermission(android.Manifest.permission.ACCESS_COARSE_LOCATION) == android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            try {
+                android.location.LocationManager lm = ctx.getSystemService(android.location.LocationManager.class);
+                for (String p : lm.getAllProviders()) {
+                    android.location.Location l = lm.getLastKnownLocation(p);
+                    if (l != null && (best == null || l.getTime() > best.getTime())) best = l;
+                }
+            } catch (RuntimeException ignored) {
+            }
+        }
+        android.location.Location here = best;
+        android.content.Context app = ctx.getApplicationContext();
+        IO.execute(() -> {
+            Place place = null;
+            if (here != null) {
+                String name = "";
+                try {
+                    if (android.location.Geocoder.isPresent()) {
+                        java.util.List<android.location.Address> a = new android.location.Geocoder(app)
+                                .getFromLocation(here.getLatitude(), here.getLongitude(), 1);
+                        if (a != null && !a.isEmpty() && a.get(0).getLocality() != null) name = a.get(0).getLocality();
+                    }
+                } catch (Exception ignored) {
+                }
+                place = new Place(name, here.getLatitude(), here.getLongitude());
+            } else {
+                try {
+                    JSONObject r = new JSONObject(get("https://ipwho.is/?fields=success,city,country,latitude,longitude"));
+                    if (r.optBoolean("success")) {
+                        String country = r.optString("country", "");
+                        place = new Place(r.optString("city", "") + (country.isEmpty() ? "" : ", " + country),
+                                r.getDouble("latitude"), r.getDouble("longitude"));
+                    }
+                } catch (Exception ignored) {
+                }
             }
             Place found = place;
             ui.post(() -> cb.done(found));

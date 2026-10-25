@@ -1226,9 +1226,17 @@ public class HomeActivity extends Activity {
                 .setNegativeButton("Cancel", null)
                 .show());
         new AlertDialog.Builder(this)
-                .setTitle("Launcher settings")
+                .setTitle("Launcher settings · v" + versionName())
                 .setItems(items.toArray(new String[0]), (d, which) -> actions.get(which).run())
                 .show();
+    }
+
+    private String versionName() {
+        try {
+            return pm.getPackageInfo(getPackageName(), 0).versionName;
+        } catch (PackageManager.NameNotFoundException e) {
+            return "?";
+        }
     }
 
     /** The TV's own pages that matter most on a projector or TV, one press away. */

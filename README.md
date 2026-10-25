@@ -5,7 +5,7 @@
 **A fluid launcher for Android TV and Google TV.**
 
 Your most-used apps, in the order you use them, in colors that follow the app you're on.
-No ads, no recommendations, no internet permission, about 40 MB of memory.
+No ads, no recommendations, no tracking, about 40 MB of memory. It goes online only for the optional weather and screensaver photos, both off until you turn them on.
 
 [![Download APK](https://img.shields.io/badge/Download-APK-3DDC84?style=for-the-badge&logo=android&logoColor=white)](https://github.com/0xRampey/material-tv-launcher/releases/latest/download/material-tv-launcher.apk)
 
@@ -58,7 +58,7 @@ Tried it on your TV? A short report with a screenshot helps others, see [Contrib
 
 ## Privacy
 
-The app has **no internet permission**, so nothing it reads can leave the TV.
+The launcher itself never goes online. The `INTERNET` permission exists only for two optional features that are off until you switch them on in Launcher settings: **weather** (the city you type, then its coordinates, go to Open-Meteo) and **screensaver photos** (a size-only request to picsum.photos). Nothing the app reads on the TV (your apps, usage, what is playing) is sent anywhere.
 
 See [permissions and verification](AGENTS.md#privacy).
 

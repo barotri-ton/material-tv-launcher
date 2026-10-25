@@ -256,7 +256,7 @@ public class HomeActivity extends Activity {
             } else if (!time.contentEquals(clock.getText())) {
                 changeClock(time);
             }
-            date.setText(new SimpleDateFormat("EEEE, MMMM d", Locale.getDefault()).format(now));
+            date.setText(DateText.format(now, Locale.getDefault()));
             handler.postDelayed(this, 15_000);
         }
     };

@@ -247,7 +247,7 @@ public class HomeActivity extends Activity {
     private final Runnable tick = new Runnable() {
         @Override public void run() {
             Date now = new Date();
-            String time = new SimpleDateFormat("h:mm", Locale.getDefault()).format(now);
+            String time = new SimpleDateFormat(prefs.clockPattern(HomeActivity.this), Locale.getDefault()).format(now);
             if (clock.getText().length() == 0) {
                 clock.setText(time);
                 clock.setTypeface(clockFont(clockWeight()));
@@ -487,9 +487,10 @@ public class HomeActivity extends Activity {
     /** The dock: most-used apps of the last 14 days (left = most used), topped up from the TV's other installed apps. */
     private List<String> dockApps() {
         List<String> out = new ArrayList<>();
+        Set<String> hidden = prefs.hidden();
         // Apps pinned from the tile menu come first, in the order they were arranged.
         for (String pkg : prefs.pinned()) {
-            if (out.size() < DOCK_SIZE && launchIntent(pkg) != null && !out.contains(pkg)) out.add(pkg);
+            if (out.size() < DOCK_SIZE && launchIntent(pkg) != null && !out.contains(pkg) && !hidden.contains(pkg)) out.add(pkg);
         }
         // Screensaver apps rack up "use" while the screensaver runs: they never count toward the dock.
         java.util.Set<String> screensavers = new java.util.HashSet<>();
@@ -503,7 +504,7 @@ public class HomeActivity extends Activity {
             for (android.app.usage.UsageStats u : used) {
                 if (out.size() >= DOCK_SIZE || u.getTotalTimeInForeground() < 60_000) break;
                 String pkg = u.getPackageName();
-                if (pkg.equals(getPackageName()) || out.contains(pkg) || NOT_IN_DOCK.contains(pkg) || screensavers.contains(pkg) || launchIntent(pkg) == null) continue;
+                if (pkg.equals(getPackageName()) || out.contains(pkg) || hidden.contains(pkg) || NOT_IN_DOCK.contains(pkg) || screensavers.contains(pkg) || launchIntent(pkg) == null) continue;
                 out.add(pkg);
             }
         } catch (RuntimeException ignored) {
@@ -535,7 +536,7 @@ public class HomeActivity extends Activity {
             List<String> rest = new ArrayList<>();
             for (ResolveInfo info : pm.queryIntentActivities(new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LEANBACK_LAUNCHER), 0)) {
                 String pkg = info.activityInfo.packageName;
-                if (!out.contains(pkg) && !rest.contains(pkg) && !pkg.equals(getPackageName()) && !NOT_IN_DOCK.contains(pkg)
+                if (!out.contains(pkg) && !rest.contains(pkg) && !hidden.contains(pkg) && !pkg.equals(getPackageName()) && !NOT_IN_DOCK.contains(pkg)
                         && !screensavers.contains(pkg) && !(devicesShown && pkg.equals(inputApp))) rest.add(pkg);
             }
             rest.sort((a, b) -> {
@@ -664,11 +665,12 @@ public class HomeActivity extends Activity {
 
     private void fillApps() {
         Set<String> seen = new LinkedHashSet<>();
+        Set<String> hidden = prefs.hidden();
         List<ResolveInfo> found = new ArrayList<>();
         for (String category : new String[]{Intent.CATEGORY_LEANBACK_LAUNCHER, Intent.CATEGORY_LAUNCHER}) {
             for (ResolveInfo info : pm.queryIntentActivities(new Intent(Intent.ACTION_MAIN).addCategory(category), 0)) {
                 String pkg = info.activityInfo.packageName;
-                if (pkg.equals(getPackageName()) || !seen.add(pkg)) continue;
+                if (pkg.equals(getPackageName()) || hidden.contains(pkg) || !seen.add(pkg)) continue;
                 found.add(info);
             }
         }
@@ -1083,12 +1085,32 @@ public class HomeActivity extends Activity {
                 });
             }
         }
+        items.add("Hide app");
+        actions.add(() -> {
+            Set<String> hidden = prefs.hidden();
+            hidden.add(pkg);
+            prefs.setHidden(hidden);
+            pinned.remove(pkg);
+            prefs.setPinned(pinned);
+            Toast.makeText(this, label + " hidden. Show it again in Launcher settings.", Toast.LENGTH_LONG).show();
+            refreshApps();
+        });
         items.add("App info");
         actions.add(() -> launch(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", pkg, null))));
         new AlertDialog.Builder(this)
                 .setTitle(label)
                 .setItems(items.toArray(new String[0]), (d, which) -> actions.get(which).run())
                 .show();
+    }
+
+    /** The dock and the Apps page again, after pinned or hidden apps changed. */
+    private void refreshApps() {
+        dockKey = null;
+        fillDock();
+        if (showingApps) {
+            appsKey = null;
+            fillApps();
+        }
     }
 
     private void savePinned(List<String> pinned, String focusPkg) {
@@ -1100,32 +1122,79 @@ public class HomeActivity extends Activity {
 
     /** Hold OK on Settings: the launcher's own choices. */
     private void showLauncherSettings() {
+        List<String> items = new ArrayList<>();
+        List<Runnable> actions = new ArrayList<>();
+        items.add("Animations: " + (prefs.reducedMotion() ? "Off" : "On"));
+        actions.add(() -> {
+            prefs.setReducedMotion(!prefs.reducedMotion());
+            drifting = !prefs.reducedMotion();
+            shape.removeCallbacks(drift);
+            if (drifting && foreground) {
+                driftLast = 0;
+                shape.postOnAnimation(drift);
+            }
+            showLauncherSettings();
+        });
+        items.add("Apps per row: " + prefs.columns());
+        actions.add(() -> {
+            int next = prefs.columns() + 1;
+            prefs.setColumns(next > Prefs.MAX_COLUMNS ? Prefs.MIN_COLUMNS : next);
+            showLauncherSettings();
+        });
+        items.add("Clock: " + new String[]{"Follow TV", "12-hour", "24-hour"}[prefs.clockMode()]);
+        actions.add(() -> {
+            prefs.setClockMode((prefs.clockMode() + 1) % 3);
+            handler.removeCallbacks(tick);
+            handler.post(tick);
+            showLauncherSettings();
+        });
         String startApp = prefs.startApp();
-        String[] items = {
-                "Animations: " + (prefs.reducedMotion() ? "Off" : "On"),
-                "Apps per row: " + prefs.columns(),
-                "Open on start: " + (startApp != null && launchIntent(startApp) != null ? appLabel(startApp) : "Off"),
-        };
+        items.add("Open on start: " + (startApp != null && launchIntent(startApp) != null ? appLabel(startApp) : "Off"));
+        actions.add(this::chooseStartApp);
+        int hiddenCount = prefs.hidden().size();
+        items.add("Hidden apps: " + hiddenCount + (hiddenCount > 0 ? " (select to show all)" : ""));
+        actions.add(() -> {
+            if (hiddenCount > 0) {
+                prefs.setHidden(new java.util.HashSet<>());
+                refreshApps();
+            }
+            showLauncherSettings();
+        });
+        items.add("System shortcuts");
+        actions.add(this::showShortcuts);
+        items.add("Reset launcher settings");
+        actions.add(() -> new AlertDialog.Builder(this)
+                .setTitle("Reset launcher settings?")
+                .setMessage("Animations, apps per row, clock and the start app go back to how they came. Pinned and hidden apps stay.")
+                .setPositiveButton("Reset", (d, w) -> {
+                    prefs.resetSettings();
+                    drifting = true;
+                    shape.removeCallbacks(drift);
+                    if (foreground) {
+                        driftLast = 0;
+                        shape.postOnAnimation(drift);
+                    }
+                    handler.removeCallbacks(tick);
+                    handler.post(tick);
+                    appsKey = null;
+                    if (showingApps) fillApps();
+                })
+                .setNegativeButton("Cancel", null)
+                .show());
         new AlertDialog.Builder(this)
                 .setTitle("Launcher settings")
-                .setItems(items, (d, which) -> {
-                    if (which == 0) {
-                        prefs.setReducedMotion(!prefs.reducedMotion());
-                        drifting = !prefs.reducedMotion();
-                        shape.removeCallbacks(drift);
-                        if (drifting && foreground) {
-                            driftLast = 0;
-                            shape.postOnAnimation(drift);
-                        }
-                        showLauncherSettings();
-                    } else if (which == 1) {
-                        int next = prefs.columns() + 1;
-                        prefs.setColumns(next > Prefs.MAX_COLUMNS ? Prefs.MIN_COLUMNS : next);
-                        showLauncherSettings();
-                    } else {
-                        chooseStartApp();
-                    }
-                })
+                .setItems(items.toArray(new String[0]), (d, which) -> actions.get(which).run())
+                .show();
+    }
+
+    /** The TV's own pages that matter most on a projector or TV, one press away. */
+    private void showShortcuts() {
+        String[] names = {"Wi-Fi", "Display", "Sound", "Screensaver", "Choose default home"};
+        String[] actions = {Settings.ACTION_WIFI_SETTINGS, Settings.ACTION_DISPLAY_SETTINGS, Settings.ACTION_SOUND_SETTINGS,
+                "android.settings.DREAM_SETTINGS", Settings.ACTION_HOME_SETTINGS};
+        new AlertDialog.Builder(this)
+                .setTitle("System shortcuts")
+                .setItems(names, (d, which) -> launch(new Intent(actions[which])))
                 .show();
     }
 

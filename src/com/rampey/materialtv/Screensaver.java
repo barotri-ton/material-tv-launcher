@@ -37,6 +37,7 @@ public class Screensaver extends DreamService {
     private static final long PALETTE_EVERY = 60 * 60_000L;   // a new wallpaper every hour (owner choice)
 
     private final Handler handler = new Handler(Looper.getMainLooper());
+    private Prefs prefs;
     private FrameLayout root;
     private ShapeScene scene;
     private LinearLayout block;
@@ -62,7 +63,7 @@ public class Screensaver extends DreamService {
     private final Runnable tick = new Runnable() {
         @Override public void run() {
             Date d = new Date();
-            clock.setText(new SimpleDateFormat("h:mm", Locale.getDefault()).format(d));
+            clock.setText(new SimpleDateFormat(prefs.clockPattern(Screensaver.this), Locale.getDefault()).format(d));
             date.setText(new SimpleDateFormat("EEEE, MMMM d", Locale.getDefault()).format(d));
             updateSong();
             // Move the clock block slightly each minute (no fixed pixels on the panel for hours).
@@ -95,6 +96,7 @@ public class Screensaver extends DreamService {
 
     @Override public void onAttachedToWindow() {
         super.onAttachedToWindow();
+        prefs = new Prefs(this);
         setInteractive(false);
         setFullscreen(true);
         hue = (System.currentTimeMillis() / 1000L) % 360;

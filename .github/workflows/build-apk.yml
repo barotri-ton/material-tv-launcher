@@ -32,7 +32,9 @@ jobs:
         run: |
           TAG=android9-latest
           VERSION=$(grep -o 'VERSION_NAME:-[0-9.]*' build.sh | cut -d- -f2)
+          # The same APK twice: a fixed name (install.sh and the download link rely on it) and one carrying the version.
+          cp build/material-tv-launcher.apk "build/material-tv-launcher-v$VERSION.apk"
           gh release delete "$TAG" --cleanup-tag --yes -R "$GITHUB_REPOSITORY" || true
-          gh release create "$TAG" build/material-tv-launcher.apk install.sh uninstall.sh -R "$GITHUB_REPOSITORY" \
+          gh release create "$TAG" build/material-tv-launcher.apk "build/material-tv-launcher-v$VERSION.apk" install.sh uninstall.sh -R "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" --title "Android 9 build v$VERSION" \
             --notes "Material TV Launcher $VERSION for Android 9+ (API 28). Built from $GITHUB_SHA."

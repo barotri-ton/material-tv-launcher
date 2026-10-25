@@ -27,6 +27,42 @@ final class WatchNext {
     static final class Item {
         String pkg, title, poster, intentUri;
         long position, duration, engaged;
+        /** Only for items remembered from Now Playing (no poster, no intent from the app). */
+        String subtitle, mediaId, mediaUri;
+        boolean recent;
+    }
+
+    /**
+     * What the Continue tab lists: the apps' own Watch Next items plus what was played on this TV. The same title from the
+     * same app is one entry (the app's item wins, with the remembered position if it has none); finished items drop out.
+     */
+    static List<Item> merge(List<Item> offered, List<Item> played, Set<String> skip) {
+        java.util.Map<String, Item> byKey = new java.util.LinkedHashMap<>();
+        if (offered != null) for (Item it : offered) byKey.put(key(it), it);
+        if (played != null) {
+            for (Item it : played) {
+                if (skip.contains(it.pkg)) continue;
+                Item have = byKey.get(key(it));
+                if (have == null) {
+                    byKey.put(key(it), it);
+                } else {
+                    if (have.position <= 0) have.position = it.position;
+                    if (have.duration <= 0) have.duration = it.duration;
+                    have.engaged = Math.max(have.engaged, it.engaged);
+                }
+            }
+        }
+        List<Item> out = new ArrayList<>();
+        for (Item it : byKey.values()) {
+            if (it.duration > 0 && it.position >= it.duration * 0.95) continue;
+            out.add(it);
+        }
+        Collections.sort(out, (a, b) -> Long.compare(b.engaged, a.engaged));
+        return out.size() > MAX_ITEMS ? new ArrayList<>(out.subList(0, MAX_ITEMS)) : out;
+    }
+
+    private static String key(Item it) {
+        return it.pkg + "|" + it.title.trim().toLowerCase(java.util.Locale.ROOT);
     }
 
     private static final ExecutorService IO = Executors.newSingleThreadExecutor(r -> {

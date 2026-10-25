@@ -129,7 +129,8 @@ The launcher itself never goes online. `INTERNET` is used only by two optional f
 Launcher settings (hold OK on **Settings**): weather sends the city you typed and then its coordinates to
 [Open-Meteo](https://open-meteo.com/); screensaver photos request a random photo of a given size from
 [picsum.photos](https://picsum.photos/) (photos from Unsplash). Nothing the app reads on the TV is sent anywhere. The optional **Continue** tab (off by default) reads what your apps
-publish under Continue watching, on the TV only; a poster that is an https address loads from the address that app gave,
+publish under Continue watching and keeps a short list of what you played (title, app, position; up to 12, on the TV only,
+clearable in Launcher settings), only while the tab is on; a poster that is an https address loads from the address that app gave,
 which shows that app's image server your TV's address, as the app itself would. Check the
 permissions yourself: `aapt2 dump permissions material-tv-launcher.apk` (`aapt2` comes with the Android SDK build-tools).
 
@@ -196,7 +197,7 @@ Only when you select its tile. Switching to the input wakes the console over HDM
 menu.
 
 **Can I pin my own apps?**
-Yes. Hold OK on any tile (in the dock or on the Apps page) and choose *Pin to dock*; the same menu moves a pinned app left or right, unpins it, or opens its app info. Pinned apps sit first in the dock and the rest still follows what you use. Hold OK on **Settings** for launcher settings: animations on or off (turn them off on a TV that struggles), apps per row, clock (follow the TV, 12 or 24 hour), an app to open when the TV starts, hidden apps, an optional **Continue** tab (what your apps offer under Continue watching), optional weather and screensaver photos, shortcuts to Wi-Fi, display, sound, screensaver and the default-home picker, and a reset. The tile menu can also hide an app without uninstalling it, or uninstall an app you installed (Android asks you to confirm).
+Yes. Hold OK on any tile (in the dock or on the Apps page) and choose *Pin to dock*; the same menu moves a pinned app left or right, unpins it, or opens its app info. Pinned apps sit first in the dock and the rest still follows what you use. Hold OK on **Settings** for launcher settings: animations on or off (turn them off on a TV that struggles), apps per row, clock (follow the TV, 12 or 24 hour), an app to open when the TV starts, hidden apps, an optional **Continue** tab (what you played here, plus what your apps offer under Continue watching), optional weather and screensaver photos, shortcuts to Wi-Fi, display, sound, screensaver and the default-home picker, and a reset. The tile menu can also hide an app without uninstalling it, or uninstall an app you installed (Android asks you to confirm).
 
 ## License
 

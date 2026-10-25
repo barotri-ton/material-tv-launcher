@@ -1187,6 +1187,12 @@ public class HomeActivity extends Activity {
             }
             showLauncherSettings();
         });
+        int played = prefs.recent().size();
+        items.add("Recently played: " + played + (played > 0 ? " (select to clear)" : ""));
+        actions.add(() -> {
+            prefs.clearRecent();
+            showLauncherSettings();
+        });
         items.add("Weather: " + (prefs.weatherOn() ? prefs.weatherCity() : "Off"));
         actions.add(this::showWeatherSettings);
         items.add("Continue watching tab: " + (prefs.continueOn() ? "On" : "Off"));
@@ -1426,36 +1432,77 @@ public class HomeActivity extends Activity {
     }
 
     private void refreshContinue() {
-        if (checkSelfPermission(WatchNext.PERMISSION) != PackageManager.PERMISSION_GRANTED) {
-            continueRow.removeAllViews();
-            continueMessage.setText("Continue watching reads what your streaming apps offer to pick up where you left off. It stays on this TV.");
-            continueMessage.setVisibility(View.VISIBLE);
-            continueAllow.setVisibility(View.VISIBLE);
-            continueAllow.requestFocus();
-            return;
-        }
-        continueAllow.setVisibility(View.GONE);
+        boolean granted = checkSelfPermission(WatchNext.PERMISSION) == PackageManager.PERMISSION_GRANTED;
         Set<String> skip = new java.util.HashSet<>(prefs.hidden());
         skip.add(getPackageName());
+        List<WatchNext.Item> played = prefs.recent();
+        if (!granted) {
+            showContinueRow(WatchNext.merge(null, played, skip), false);
+            return;
+        }
         WatchNext.load(handler, getContentResolver(), skip, items -> {
-            if (!showingContinue) return;
-            continueRow.removeAllViews();
-            if (items == null || items.isEmpty()) {
-                continueMessage.setText(items == null
-                        ? "Could not read Continue watching on this TV."
-                        : "Nothing to continue yet. Apps show up here only if they publish what you were watching; some apps do not.");
-                continueMessage.setVisibility(View.VISIBLE);
-                return;
-            }
-            continueMessage.setVisibility(View.GONE);
-            for (WatchNext.Item item : items) {
-                View card = posterCard(item);
-                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-                if (continueRow.getChildCount() > 0) lp.setMarginStart(dp(GAP));
-                continueRow.addView(card, lp);
-            }
-            if (continueRow.getChildCount() > 0) continueRow.getChildAt(0).requestFocus();
+            if (showingContinue) showContinueRow(WatchNext.merge(items, played, skip), true);
         });
+    }
+
+    private void showContinueRow(List<WatchNext.Item> list, boolean granted) {
+        continueRow.removeAllViews();
+        for (WatchNext.Item item : list) {
+            if (launchIntent(item.pkg) == null) continue;      // uninstalled since
+            View card = posterCard(item);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            if (continueRow.getChildCount() > 0) lp.setMarginStart(dp(GAP));
+            continueRow.addView(card, lp);
+        }
+        boolean empty = continueRow.getChildCount() == 0;
+        String offered = "Allow access to also list what your apps offer under Continue watching.";
+        if (empty) {
+            continueMessage.setText("Nothing to continue yet. What you play on this TV shows up here"
+                    + (granted ? "; apps that publish to Continue watching add theirs." : ". " + offered));
+        } else {
+            continueMessage.setText(offered);
+        }
+        continueMessage.setVisibility(empty || !granted ? View.VISIBLE : View.GONE);
+        continueAllow.setVisibility(granted ? View.GONE : View.VISIBLE);
+        if (!empty) continueRow.getChildAt(0).requestFocus();
+        else if (!granted) continueAllow.requestFocus();
+    }
+
+    private void launchContinue(WatchNext.Item item) {
+        if (!item.recent) {
+            launchWatchNext(item);
+            return;
+        }
+        Intent deep = resumeIntent(item.pkg, item.mediaId, item.mediaUri, item.position);
+        if (deep == null || pm.resolveActivity(deep, 0) == null) deep = launchIntent(item.pkg);
+        if (deep != null) launch(deep);
+    }
+
+    // What was played, kept for the Continue tab (only while that tab is on; never leaves the TV).
+    private long recordedAt;
+    private int recordedState = -1;
+    private String recordedItem;
+
+    private void recordRecent(boolean force) {
+        if (!prefs.continueOn() || lastItem == null || lastPkg == null || lastTitle == null || lastTitle.length() == 0) return;
+        if (lastPkg.equals(getPackageName())) return;
+        long now = System.currentTimeMillis();
+        boolean changed = !lastItem.equals(recordedItem) || lastState != recordedState;
+        if (!force && !changed && now - recordedAt < 30_000) return;
+        recordedItem = lastItem;
+        recordedState = lastState;
+        recordedAt = now;
+        WatchNext.Item it = new WatchNext.Item();
+        it.pkg = lastPkg;
+        it.title = lastTitle.toString();
+        it.subtitle = lastArtist != null ? lastArtist.toString() : "";
+        it.mediaId = lastMediaId;
+        it.mediaUri = lastMediaUri;
+        it.position = rememberedPosition();
+        it.duration = lastDuration;
+        it.engaged = now;
+        it.recent = true;
+        prefs.addRecent(it);
     }
 
     /** A 16:9 poster with a thin progress line, the title and the app's name under it. */
@@ -1477,6 +1524,10 @@ public class HomeActivity extends Activity {
         card.setClipToOutline(true);
         ImageView image = new ImageView(this);
         image.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        if (item.poster == null) {                      // played here: no poster, so the app's icon, whole, on the tile
+            image.setScaleType(ImageView.ScaleType.FIT_CENTER);
+            image.setPadding(dp(40), dp(24), dp(40), dp(24));
+        }
         card.addView(image, match());
         Drawable appArt = null;
         try {
@@ -1517,7 +1568,7 @@ public class HomeActivity extends Activity {
         ringFrame.setPadding(dp(RING), dp(RING), dp(RING), dp(RING));
         ringFrame.setBackground(ring);
         ringFrame.addView(card, new FrameLayout.LayoutParams(w, h));
-        card.setOnClickListener(v -> launchWatchNext(item));
+        card.setOnClickListener(v -> launchContinue(item));
         card.setOnFocusChangeListener((v, focused) -> {
             float scale = focused ? 1.10f : 1f;
             ringFrame.animate().scaleX(scale).scaleY(scale)
@@ -1543,7 +1594,7 @@ public class HomeActivity extends Activity {
         name.setEllipsize(TextUtils.TruncateAt.END);
         name.setPadding(dp(RING), dp(8), dp(RING), 0);
         holder.addView(name, new LinearLayout.LayoutParams(w + dp(2 * RING), ViewGroup.LayoutParams.WRAP_CONTENT));
-        TextView from = text(label, 13, palette.onSurfaceVariant, 500);
+        TextView from = text(label + (item.subtitle != null && !item.subtitle.isEmpty() ? " · " + item.subtitle : ""), 13, palette.onSurfaceVariant, 500);
         from.setSingleLine(true);
         from.setPadding(dp(RING), dp(2), dp(RING), 0);
         holder.addView(from, new LinearLayout.LayoutParams(w + dp(2 * RING), ViewGroup.LayoutParams.WRAP_CONTENT));
@@ -1877,6 +1928,7 @@ public class HomeActivity extends Activity {
         lastSeenAt = System.currentTimeMillis();
         if (lastState == PlaybackState.STATE_PLAYING || lastState == PlaybackState.STATE_BUFFERING) sessionPlayFailed = false;
         handler.removeCallbacks(expire);
+        recordRecent(false);
     }
 
     /** The session stopped or went away: pin the position it had at this moment and start the 6 h clock. */
@@ -1889,6 +1941,7 @@ public class HomeActivity extends Activity {
         sessionPlayFailed = false;
         handler.removeCallbacks(expire);
         handler.postDelayed(expire, REMEMBER_MS);
+        recordRecent(true);
     }
 
     /** Where the remembered item is now: the last reported position, run forward while it was playing, within its length. */

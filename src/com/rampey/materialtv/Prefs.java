@@ -73,6 +73,57 @@ final class Prefs {
         sp.edit().putBoolean("continue", on).apply();
     }
 
+    // ---- recently played (kept on the TV, only while the Continue tab is on) ----
+
+    private static final int MAX_RECENT = 12;
+
+    List<WatchNext.Item> recent() {
+        List<WatchNext.Item> out = new ArrayList<>();
+        try {
+            org.json.JSONArray all = new org.json.JSONArray(sp.getString("recent", "[]"));
+            for (int i = 0; i < all.length(); i++) {
+                org.json.JSONObject o = all.getJSONObject(i);
+                WatchNext.Item it = new WatchNext.Item();
+                it.pkg = o.getString("pkg");
+                it.title = o.getString("title");
+                it.subtitle = o.optString("subtitle", "");
+                it.mediaId = o.optString("mediaId", null);
+                it.mediaUri = o.optString("mediaUri", null);
+                it.position = o.optLong("position");
+                it.duration = o.optLong("duration");
+                it.engaged = o.optLong("engaged");
+                it.recent = true;
+                out.add(it);
+            }
+        } catch (org.json.JSONException ignored) {
+        }
+        return out;
+    }
+
+    /** Newest first; the same app and title replaces its older entry. */
+    void addRecent(WatchNext.Item item) {
+        List<WatchNext.Item> list = recent();
+        for (int i = list.size() - 1; i >= 0; i--) {
+            if (list.get(i).pkg.equals(item.pkg) && list.get(i).title.equals(item.title)) list.remove(i);
+        }
+        list.add(0, item);
+        while (list.size() > MAX_RECENT) list.remove(list.size() - 1);
+        try {
+            org.json.JSONArray all = new org.json.JSONArray();
+            for (WatchNext.Item it : list) {
+                all.put(new org.json.JSONObject().put("pkg", it.pkg).put("title", it.title).put("subtitle", it.subtitle == null ? "" : it.subtitle)
+                        .put("mediaId", it.mediaId).put("mediaUri", it.mediaUri).put("position", it.position)
+                        .put("duration", it.duration).put("engaged", it.engaged));
+            }
+            sp.edit().putString("recent", all.toString()).apply();
+        } catch (org.json.JSONException ignored) {
+        }
+    }
+
+    void clearRecent() {
+        sp.edit().remove("recent").apply();
+    }
+
     // ---- weather (off until a city is set) ----
 
     boolean weatherOn() {
@@ -124,7 +175,7 @@ final class Prefs {
     /** Every choice back to how it came; pinned and hidden apps stay. */
     void resetSettings() {
         SharedPreferences.Editor e = sp.edit();
-        for (String key : new String[]{"reduced_motion", "columns", "clock_mode", "start_app", "fahrenheit", "photos", "continue", "weather_city", "weather_lat",
+        for (String key : new String[]{"reduced_motion", "columns", "clock_mode", "start_app", "fahrenheit", "photos", "continue", "recent", "weather_city", "weather_lat",
                 "weather_lon", "weather_text", "weather_at"}) e.remove(key);
         e.apply();
     }

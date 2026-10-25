@@ -39,6 +39,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.view.animation.PathInterpolator;
 import android.view.inputmethod.EditorInfo;
+import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.GridLayout;
 import android.widget.HorizontalScrollView;
@@ -118,6 +119,7 @@ public class HomeActivity extends Activity {
     private LinearLayout dock;
     private TextView clock;
     private TextView date;
+    private TextView weather;
     private TextView focusTitle;
     private ButtonGroup nav;
 
@@ -293,6 +295,7 @@ public class HomeActivity extends Activity {
         handler.removeCallbacks(prebuildApps);
         handler.postDelayed(prebuildApps, 1500);
         foreground = true;
+        showWeather();
         startNowPlaying();
         android.media.tv.TvInputManager inputs = getSystemService(android.media.tv.TvInputManager.class);
         if (inputs != null) {
@@ -314,6 +317,7 @@ public class HomeActivity extends Activity {
         // The media session stays watched (it only updates fields, never views) so the card remembers what played
         // while another app had the screen; it is let go in onDestroy.
         foreground = false;
+        handler.removeCallbacks(refreshWeather);
         handler.removeCallbacks(checkResumed);
         android.media.tv.TvInputManager inputs = getSystemService(android.media.tv.TvInputManager.class);
         if (inputs != null) inputs.unregisterCallback(inputCallback);
@@ -419,6 +423,10 @@ public class HomeActivity extends Activity {
         date = text("", 15, palette.onSurfaceVariant, 500);
         date.setPadding(dp(2), dp(2), 0, 0);
         when.addView(date);
+        weather = text("", 15, palette.onSurfaceVariant, 500);
+        weather.setPadding(dp(2), dp(2), 0, 0);
+        weather.setVisibility(View.GONE);
+        when.addView(weather);
         bar.addView(when, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.START | Gravity.TOP));
 
         nav = new ButtonGroup(this, font(600), palette,
@@ -1160,12 +1168,14 @@ public class HomeActivity extends Activity {
             }
             showLauncherSettings();
         });
+        items.add("Weather: " + (prefs.weatherOn() ? prefs.weatherCity() : "Off"));
+        actions.add(this::showWeatherSettings);
         items.add("System shortcuts");
         actions.add(this::showShortcuts);
         items.add("Reset launcher settings");
         actions.add(() -> new AlertDialog.Builder(this)
                 .setTitle("Reset launcher settings?")
-                .setMessage("Animations, apps per row, clock and the start app go back to how they came. Pinned and hidden apps stay.")
+                .setMessage("Animations, apps per row, clock, weather and the start app go back to how they came. Pinned and hidden apps stay.")
                 .setPositiveButton("Reset", (d, w) -> {
                     prefs.resetSettings();
                     drifting = true;
@@ -1178,6 +1188,7 @@ public class HomeActivity extends Activity {
                     handler.post(tick);
                     appsKey = null;
                     if (showingApps) fillApps();
+                    showWeather();
                 })
                 .setNegativeButton("Cancel", null)
                 .show());
@@ -1217,6 +1228,84 @@ public class HomeActivity extends Activity {
                     prefs.setStartApp(which == 0 ? null : pkgs.get(which - 1));
                     showLauncherSettings();
                 })
+                .show();
+    }
+
+    // ---- weather ----
+
+    private static final long WEATHER_EVERY_MS = 30 * 60_000L;
+    private final Runnable refreshWeather = this::showWeather;
+
+    /** Shows the last weather line and, while Home is up and the data is old, fetches a fresh one. */
+    private void showWeather() {
+        handler.removeCallbacks(refreshWeather);
+        if (!prefs.weatherOn()) {
+            weather.setVisibility(View.GONE);
+            return;
+        }
+        String line = prefs.weatherText();
+        weather.setText(line.isEmpty() ? prefs.weatherCity() : prefs.weatherCity().split(",")[0] + " · " + line);
+        weather.setVisibility(View.VISIBLE);
+        long age = System.currentTimeMillis() - prefs.weatherAt();
+        if (line.isEmpty() || age >= WEATHER_EVERY_MS) {
+            Weather.current(handler, prefs.weatherLat(), prefs.weatherLon(), prefs.fahrenheit(), result -> {
+                if (result != null) prefs.setWeatherText(result);
+                if (foreground) showWeather();
+            });
+            if (foreground) handler.postDelayed(refreshWeather, 60_000L);   // offline: try again in a minute
+        } else if (foreground) {
+            handler.postDelayed(refreshWeather, WEATHER_EVERY_MS - age);
+        }
+    }
+
+    private void showWeatherSettings() {
+        List<String> items = new ArrayList<>();
+        List<Runnable> actions = new ArrayList<>();
+        items.add("City: " + (prefs.weatherOn() ? prefs.weatherCity() : "not set") + " (change)");
+        actions.add(this::askWeatherCity);
+        items.add("Units: " + (prefs.fahrenheit() ? "°F" : "°C"));
+        actions.add(() -> {
+            prefs.setFahrenheit(!prefs.fahrenheit());
+            showWeather();
+            showWeatherSettings();
+        });
+        if (prefs.weatherOn()) {
+            items.add("Turn weather off");
+            actions.add(() -> {
+                prefs.clearWeather();
+                showWeather();
+                showLauncherSettings();
+            });
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("Weather (needs the internet)")
+                .setItems(items.toArray(new String[0]), (d, which) -> actions.get(which).run())
+                .show();
+    }
+
+    private void askWeatherCity() {
+        EditText input = new EditText(this);
+        input.setSingleLine(true);
+        input.setHint("City name");
+        input.setImeOptions(EditorInfo.IME_ACTION_DONE);
+        new AlertDialog.Builder(this)
+                .setTitle("Weather for which city?")
+                .setView(input)
+                .setPositiveButton("Search", (d, w) -> {
+                    String query = input.getText().toString().trim();
+                    if (query.isEmpty()) return;
+                    Weather.findCity(handler, query, place -> {
+                        if (place == null) {
+                            Toast.makeText(this, "City not found. Check the name and the internet connection.", Toast.LENGTH_LONG).show();
+                        } else {
+                            prefs.setWeatherPlace(place.name, place.lat, place.lon);
+                            showWeather();
+                            Toast.makeText(this, "Weather for " + place.name, Toast.LENGTH_SHORT).show();
+                        }
+                        showWeatherSettings();
+                    });
+                })
+                .setNegativeButton("Cancel", null)
                 .show();
     }
 

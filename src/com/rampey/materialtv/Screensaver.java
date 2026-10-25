@@ -64,7 +64,8 @@ public class Screensaver extends DreamService {
         @Override public void run() {
             Date d = new Date();
             clock.setText(new SimpleDateFormat(prefs.clockPattern(Screensaver.this), Locale.getDefault()).format(d));
-            date.setText(new SimpleDateFormat("EEEE, MMMM d", Locale.getDefault()).format(d));
+            String weather = prefs.weatherOn() ? prefs.weatherText() : "";
+            date.setText(new SimpleDateFormat("EEEE, MMMM d", Locale.getDefault()).format(d) + (weather.isEmpty() ? "" : "  ·  " + weather));
             updateSong();
             // Move the clock block slightly each minute (no fixed pixels on the panel for hours).
             int m = (int) (System.currentTimeMillis() / 60_000L);

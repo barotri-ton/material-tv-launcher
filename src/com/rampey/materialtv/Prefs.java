@@ -55,10 +55,59 @@ final class Prefs {
         return h24 ? "HH:mm" : "h:mm";
     }
 
+    // ---- weather (off until a city is set) ----
+
+    boolean weatherOn() {
+        return sp.contains("weather_lat");
+    }
+
+    String weatherCity() {
+        return sp.getString("weather_city", "");
+    }
+
+    double weatherLat() {
+        return Double.longBitsToDouble(sp.getLong("weather_lat", 0));
+    }
+
+    double weatherLon() {
+        return Double.longBitsToDouble(sp.getLong("weather_lon", 0));
+    }
+
+    void setWeatherPlace(String city, double lat, double lon) {
+        sp.edit().putString("weather_city", city).putLong("weather_lat", Double.doubleToLongBits(lat))
+                .putLong("weather_lon", Double.doubleToLongBits(lon)).remove("weather_text").remove("weather_at").apply();
+    }
+
+    void clearWeather() {
+        sp.edit().remove("weather_city").remove("weather_lat").remove("weather_lon").remove("weather_text").remove("weather_at").apply();
+    }
+
+    boolean fahrenheit() {
+        return sp.getBoolean("fahrenheit", false);
+    }
+
+    void setFahrenheit(boolean on) {
+        sp.edit().putBoolean("fahrenheit", on).remove("weather_text").remove("weather_at").apply();
+    }
+
+    /** The last weather line ("21°C · Clear"), kept so the screensaver can show it without going online. */
+    String weatherText() {
+        return sp.getString("weather_text", "");
+    }
+
+    long weatherAt() {
+        return sp.getLong("weather_at", 0);
+    }
+
+    void setWeatherText(String text) {
+        sp.edit().putString("weather_text", text).putLong("weather_at", System.currentTimeMillis()).apply();
+    }
+
     /** Every choice back to how it came; pinned and hidden apps stay. */
     void resetSettings() {
         SharedPreferences.Editor e = sp.edit();
-        for (String key : new String[]{"reduced_motion", "columns", "clock_mode", "start_app"}) e.remove(key);
+        for (String key : new String[]{"reduced_motion", "columns", "clock_mode", "start_app", "fahrenheit", "weather_city", "weather_lat",
+                "weather_lon", "weather_text", "weather_at"}) e.remove(key);
         e.apply();
     }
 

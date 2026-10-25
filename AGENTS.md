@@ -190,7 +190,7 @@ Only when you select its tile. Switching to the input wakes the console over HDM
 menu.
 
 **Can I pin my own apps?**
-Not yet. The dock follows what you use. A pin option is a welcome contribution.
+Yes. Hold OK on any tile (in the dock or on the Apps page) and choose *Pin to dock*; the same menu moves a pinned app left or right, unpins it, or opens its app info. Pinned apps sit first in the dock and the rest still follows what you use. Hold OK on **Settings** for launcher settings: animations on or off (turn them off on a TV that struggles), apps per row, and an app to open when the TV starts.
 
 ## License
 

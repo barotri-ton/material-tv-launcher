@@ -5,7 +5,7 @@
 **A fluid launcher for Android TV and Google TV.**
 
 Your most-used apps, in the order you use them, in colors that follow the app you're on.
-No ads, no recommendations, no tracking, about 40 MB of memory. It goes online only for the optional weather and screensaver photos, both off until you turn them on.
+No ads, no recommendations, no tracking, about 40 MB of memory. It goes online only for weather, screensaver photos and the posters or channel logos an app points at, each one under Launcher settings.
 
 [![Download APK](https://img.shields.io/badge/Download-APK-3DDC84?style=for-the-badge&logo=android&logoColor=white)](https://github.com/0xRampey/material-tv-launcher/releases/latest/download/material-tv-launcher.apk)
 
@@ -58,7 +58,11 @@ Tried it on your TV? A short report with a screenshot helps others, see [Contrib
 
 ## Privacy
 
-The launcher itself never goes online. The `INTERNET` permission exists only for two optional features that are off until you switch them on in Launcher settings: **weather** (the city you type, then its coordinates, go to Open-Meteo) and **screensaver photos** (a size-only request to picsum.photos). Nothing the app reads on the TV (your apps, usage, what is playing) is sent anywhere.
+The launcher goes online only for the features below; none of them sends what the app reads on the TV anywhere.
+
+- **Weather** (on by default; Launcher settings -> Weather): the city you type, then its coordinates, go to Open-Meteo. With no city it uses the TV's rough location if it has one, otherwise ipwho.is.
+- **Screensaver photos** (off by default): a size-only request to picsum.photos. Home wallpapers are bundled and offline.
+- **Continue watching** (off by default) and **TV channels** (on by default): a poster or channel logo loads from the https address the app itself supplied, so that app's image server sees the TV's address, as the app would. The list and your Continue history stay in local settings.
 
 See [permissions and verification](AGENTS.md#privacy).
 
@@ -77,6 +81,6 @@ Apache 2.0, see [`LICENSE`](LICENSE). Bundled:
 "Google Sans" and "Material Design" belong to Google; this project is not affiliated with or endorsed by Google.
 
 The 14 photos in [`assets/wallpapers`](assets/wallpapers) are **not** under Apache 2.0: eight are NASA photos of Earth from
-the International Space Station (public domain) and six are Wikimedia Commons photographs under CC BY-SA 3.0 or 4.0,
-cropped and resized to 1920 × 1080 (the picture set comes from [glassOS-tv](https://github.com/jmarknavarro/glassOS-tv)).
+the International Space Station (public domain) and six are Wikimedia Commons photographs under CC BY-SA 3.0 or 4.0.
+All are cropped and resized to 1920 × 1080 (the set comes from [glassOS-tv](https://github.com/jmarknavarro/glassOS-tv)).
 Photographers, titles and licence links are in [`assets/wallpapers/CREDITS.md`](assets/wallpapers/CREDITS.md); keep that file with the pictures.

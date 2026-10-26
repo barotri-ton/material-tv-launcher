@@ -1,248 +1,240 @@
 # AGENTS.md
 
-Guidance for coding agents (and people) working on Material TV Launcher. Read this before changing the UI.
-Installation, build and troubleshooting details also live here; keep the README focused on the launcher.
+Material TV Launcher is a buttery smooth home screen for Android TV / Google TV: the most-used apps, colors that follow
+the focused app, Material 3 Expressive. It is **only a launcher**: no debloat tooling, no AI, no tracking. It goes
+online only for the weather, screensaver photos and the posters or channel logos an app points at.
 
-## What this is
+This is the working guide for coding agents; read Hard rules and Material 3 Expressive before changing the UI. The
+README links here for install, build, permissions and troubleshooting, so keep those sections. This repo is a fork of
+`0xRampey/material-tv-launcher`; CI publishes its Android 9 build under `barotri-ton/material-tv-launcher`.
 
-A buttery smooth launcher for Android TV / Google TV: the user's most-used apps, colors that follow the focused app,
-Material 3 Expressive design. It is **only a launcher**: no debloat tooling, no AI, no tracking. It goes online only for the weather (on by default) and screensaver photos (off until the user turns them on).
+## Repo map
+
+- Package `com.rampey.materialtv` (inherited from upstream) is hard-coded in `AndroidManifest.xml`, `install.sh`,
+  `uninstall.sh` and every `adb` command. Don't rename it casually.
+- `src/com/rampey/materialtv/` is the whole app. `HomeActivity.java` (~3.2k lines) is the only Activity and the launcher:
+  Home, Apps, Continue, dock, hero, Now Playing, quick panel, tile menus and the actions behind Launcher Manager.
+  Pages are view swaps in this one Activity; there are no Fragments or other Activities. It is large: make
+  focused edits in the existing style, not a drive-by framework refactor.
+- `ManagerPage.java` only lays out Launcher Manager; each row's action lives in `HomeActivity`.
+- `Prefs.java` owns the launcher's persisted settings (`SharedPreferences("launcher")`), including folders and recent
+  items as JSON. New settings usually need a `resetSettings()` entry too; see Common changes.
+- UI widgets/effects: `ButtonGroup`, `CookieDrawable`, `EqualizerBadge`, `WavyProgress`, `ShapeScene`, `Palette`,
+  `Motion`, `Focus`.
+- Services: `HomeKeyService` (accessibility Home redirect), `MediaListener` (notification listener), `Screensaver`
+  (DreamService). `AndroidManifest.xml` registers `HomeActivity` as HOME + LEANBACK_LAUNCHER + LAUNCHER; keep those
+  filters or the launcher stops appearing.
+- Data/network: `Weather`, `Photos`, `WatchNext`, `TvChannels`, `SessionDump`.
+- No XML layouts: views are built in Java. `res/` only has drawables, `values.xml` and the accessibility config. UI
+  strings are hard-coded English in Java; `values.xml` only holds the service description. `DateText` intentionally
+  special-cases Vietnamese (`Ngày ... Tháng ... năm ...`); don't replace it with the platform pattern.
+- No Gradle, no AndroidX/Leanback, no Compose, no tests, no lint/typecheck. `./build.sh` is the only compile check.
+- `third_party/material-color-utilities` is vendored. `vendor_mcu.sh` deletes and re-copies it and uses macOS
+  `sed -i ''`; run it only when deliberately updating the library, never as part of a build.
+
+## Common changes
+
+- **New setting:** add the field and default to `Prefs`, add a row in `managerSections()` (`HomeActivity`), implement the
+  action there, and add the key to `resetSettings()` unless it is meant to survive a reset (pinned/hidden/folders do).
+- **New visual:** build it in Java with the `Focus` / `Palette` / `Motion` constants; don't add XML layouts, AndroidX
+  widgets or Compose.
+- **New permission/service:** update `AndroidManifest.xml`, `install.sh` (and `uninstall.sh` if it changes a system
+  setting), and the Privacy table below. New network use must be opt-in and must not send what the app reads.
+
+## Build it yourself
+
+No Gradle: `build.sh` runs aapt2 -> javac -> d8 -> zipalign -> apksigner and writes `build/material-tv-launcher.apk`.
+
+```bash
+./build.sh                         # wipes build/ first
+./install.sh 192.168.1.50 [apk]    # adb over Wi-Fi; grants the permissions listed in Privacy
+./uninstall.sh 192.168.1.50        # restores the TV's home screen
+```
+
+- Needs Android SDK platform 34, build-tools 34.0.0, JDK 17+ and `zip`. Set `ANDROID_HOME` if the SDK is not in the
+  default location. Env overrides: `BUILD_TOOLS`, `MIN_SDK` (default 28), `VERSION_CODE` (183), `VERSION_NAME` (0.2.0),
+  `KEYSTORE` / `KEYSTORE_PASS` / `KEY_ALIAS` (default: the Android debug key).
+- Signing is v1 + v2 only on purpose. A build signed with the default v3 block failed to install on an Android 9
+  projector (v3 is the suspected cause); don't "fix" this by enabling v3.
+- `install.sh` uses `adb connect <ip>:5555`; the TV needs USB debugging or network debugging on and you must accept the
+  prompt. It finds `material-tv-launcher.apk` next to the script, else `build/material-tv-launcher.apk`. It appends the
+  accessibility service to the existing list; `uninstall.sh` removes only ours.
+- **Windows:** `./build.sh` does not run under Git Bash as-is. It looks for extensionless `aapt2` / `d8` and calls
+  `zip`; the SDK ships `aapt2.exe` / `d8.bat`, and Git Bash has no `zip`. Use WSL2 or the CI workflow; there is no
+  Gradle project for Android Studio to build.
+- **CI and releases:** pull requests build only. Every code push to `main` also deletes and recreates the `android9-latest`
+  GitHub release with the APK, `install.sh` and `uninstall.sh`; a push to `main` is a release, not just a commit.
+  Docs-only changes don't trigger the workflow. The version is grepped from `build.sh` (`VERSION_NAME:-0.2.0`), so bump
+  both `VERSION_NAME` and `VERSION_CODE` there and keep that form.
+- **Tests:** none. The real-TV rule below is the verification bar.
+- `minSdk` is 28 (Android 9); the README's "Android 12 or newer" is tested-support guidance, not the build floor.
 
 ## Hard rules
 
-- **Online only for weather and screensaver photos.** `INTERNET` is there for weather (Open-Meteo: a typed city, then coordinates; with no city, the TV's rough location or, failing that, an ipwho.is lookup of the home's IP every 6 h) and screensaver photos (picsum.photos: a size only). Weather is on by default and can be turned off; photos are off by default. Neither sends anything the app reads on the TV (apps, usage, what plays). No other network use.
-- **Nothing user-specific in code.** The dock comes from on-device usage stats and installed apps; HDMI devices come
-  from HDMI-CEC names. No hardcoded app lists, TV models, IPs or names.
+- **Online only for the weather, screensaver photos and the posters or channel logos apps point at.** No analytics,
+  update checks, telemetry or remote config. See Privacy for exactly what leaves the TV.
+- **Nothing user-specific in code.** The dock comes from usage stats and installed apps; HDMI tiles come from CEC
+  names. No hard-coded user app lists, TV models, IPs or names (system package exclusions are fine).
 - **No brand logos we don't own.** Console tiles use Material icons on a tone of the brand hue, never a logo.
-- **Nothing animates while another app is on screen.** Stop every loop in `onPause`; resume in `onResume`.
-- **Smooth on weak TVs** (4 × Cortex-A73 at 1.39 GHz, 2.4 GB RAM): animations run on display frames
-  (`postOnAnimation`, time-based), cost only while Home is visible, and must keep 0 janky frames in `dumpsys gfxinfo`.
-- **Plain Java Views, no Gradle, no dependencies** beyond the vendored `material-color-utilities`. Build with
-  `./build.sh`. No Compose (too heavy for the target TVs).
+- **Nothing animates while another app is on screen.** Stop visual loops and Home-only timers in `onPause`; restart them
+  in `onResume`. Now Playing may keep media-session callbacks, the low-RAM dump poll (10 s while away) and the 6 h
+  forget timer running; they only update fields and never touch views.
+- **Smooth on weak TVs** (4 x Cortex-A73 at 1.39 GHz, 2.4 GB RAM): animation on display frames (`postOnAnimation`,
+  time-based), cost only while Home is visible, 0 janky frames in `dumpsys gfxinfo`.
+- **Plain Java Views, no Gradle, no Compose, no AndroidX/Leanback.** The only dependency is the vendored
+  `material-color-utilities`.
 - **Test on a real TV** with full-resolution screenshots (`adb exec-out screencap -p`) of every focus state you touch.
 
 ## Material 3 Expressive, as used here
 
-**Color** (`Palette.java`): `SchemeFidelity` from the focused app banner's seed (`QuantizerCelebi` + `Score`, the
-same as Android wallpaper color). Use roles in their intended pairs: `primary/onPrimary`, `surface*` for backgrounds,
-`inverseSurface/inverseOnSurface` for focused fills and ink, `primaryContainer` for the background shape. Never
-hard-code white/black for focus. Everything tinted cross-fades with the default effects curve on retint.
-
-**Shape** (`Focus.java`): cards 32 dp, media (tiles, pictures, banners, album art) 20 dp, buttons fully round
-(pill). The Now Playing card is a pill with a radius of half its measured height. Focused tiles tighten their
-corners (×0.62) and the ring stays concentric (radius + ring offset).
-The background shape (`CookieDrawable`) morphs only between library shapes: Cookie 4/6/7/9/12, Clover 4- and
-8-leaf, Sunny, Soft burst (MaterialShapes names); one per app, morphing on focus.
-
-**Motion** (`Motion.java`): Expressive springs via the spec's fallback curves.
-Spatial (movement, scale, shape) may overshoot: fast 350 ms for small components, default 500 ms for larger ones.
-Effects (color, opacity) never overshoot: fast 150 ms, default 200 ms. Do not add other curves or durations.
-
-**Focus** (TV): scale 1.10 with the fast spatial curve, a 3 dp ring 6 dp outside the tile that fades in, a glow in
-the app's own color (`setOutlineSpotShadowColor`), neighbors shift 8 dp aside (standard button group). Buttons and
-nav fill with `inverseSurface` on focus.
-
-**Type**: Google Sans Flex with `'ROND' 0` (never rounded), `opsz` 24 for UI and 48 for display. The focused app
-name settles into its weight; the clock's weight follows the time of day and swells briefly on each new minute.
-
-**Components**: top-bar strip (`ButtonGroup`: 30 dp outer radius, 5 dp padding, 4 dp tab gaps, round icon-only tabs
-with the page name as content description).
-The selected page has a `primary/onPrimary` pill; focused tabs use `inverseSurface/inverseOnSurface` and scale 1.05;
-inactive tabs are transparent. Fills fade as focus and selection change. Now Playing uses a wavy progress indicator
-(`WavyProgress`: moving wave while playing, flat when paused, grows in from a flat line); a morphing shape loader
-appears when an app takes over 300 ms to open.
-
-**Launcher Manager** (`ManagerPage`): every launcher setting on one page, opened by holding OK on **Settings** or
-from Quick panel → Preferences. Categories on the left (focus selects), rows with their current value on the right;
-it also picks dock apps, hides apps in bulk and edits folders. Wallpaper can be **Random**: another bundled photo every
-15 min to 1 day, checked only while Home is up.
-
-**Status marks go under the tile, never on the artwork**: the playing app gets an animated equalizer
-(`EqualizerBadge`), an HDMI device that's on gets a green dot (Material green, tone 80). When the tile is focused,
-the name appears beside the mark. The label row has a fixed height so the dock never jumps.
-
-**Screensaver** (`Screensaver`, `ShapeScene`): generated Material You-style wallpapers (rounded library shapes in one
-tonal palette, big anchors plus small accents, a left scrim for the clock), hue and brightness from the time of day,
-a new arrangement every hour, drawn on display frames.
+- **Color** (`Palette.java`): `SchemeFidelity` from the focused app banner's seed (`QuantizerCelebi` + `Score`, the same
+  as Android wallpaper color). Use roles in their intended pairs: `primary/onPrimary`, `surface*` for backgrounds,
+  `inverseSurface/inverseOnSurface` for focused fills and ink, `primaryContainer` for the background shape. Never
+  hard-code white/black for focus. Tinted surfaces cross-fade with the default effects curve on retint.
+- **Shape** (`Focus.java`): cards 32 dp, media (tiles, pictures, banners, album art) 20 dp, buttons fully round. Now
+  Playing is a pill with radius half its measured height. Focused tiles tighten corners (to 62%); the ring stays
+  concentric (radius + ring offset). Background shapes (`CookieDrawable`) morph only between library shapes: Cookie
+  4/6/7/9/12, Clover 4- and 8-leaf, Sunny, Soft burst; one per app.
+- **Motion** (`Motion.java`): Expressive springs via the spec's fallback curves. Spatial (movement, scale, shape) may
+  overshoot: fast 350 ms for small components, default 500 ms for larger. Effects (color, opacity) never overshoot:
+  fast 150 ms, default 200 ms. Don't add other curves or durations.
+- **Focus** (TV): scale 1.10 with the fast spatial curve, a 3 dp ring 6 dp outside the tile that fades in, a glow in
+  the app's own color (`setOutlineSpotShadowColor`), neighbors shift 8 dp aside. Buttons and nav fill with
+  `inverseSurface` on focus.
+- **Type**: Google Sans Flex with `'ROND' 0` (never rounded), `opsz` 24 for UI and 48 for display. The focused app name
+  settles into its weight; the clock's weight follows the time of day and swells briefly on each new minute.
+- **Components**: top-bar strip (`ButtonGroup`: 30 dp outer radius, 5 dp padding, 4 dp tab gaps, round icon-only tabs
+  with the page name as content description). The selected page has a `primary/onPrimary` pill; focused tabs use
+  `inverseSurface/inverseOnSurface` and scale 1.05; inactive tabs are transparent. Fills fade as focus/selection
+  change. Now Playing uses `WavyProgress` (moving wave while playing, flat when paused, grows in from a flat line); a
+  morphing shape loader appears when an app takes over 300 ms to open.
+- **Launcher Manager** (`ManagerPage`): all launcher settings on one page, opened by holding OK on **Settings** or
+  Quick panel -> Preferences. Categories on the left (focus selects), rows with the current value on the right; it
+  also picks dock apps, hides apps in bulk and edits folders. Wallpaper can be **Random**: another bundled photo every
+  15 min to 1 day, checked only while Home is up.
+- **Status marks go under the tile, never on the artwork**: the playing app gets an animated equalizer
+  (`EqualizerBadge`), an HDMI device that's on gets a green dot (Material green, tone 80). When the tile is focused,
+  the name appears beside the mark. The label row has a fixed height so the dock never jumps.
+- **Screensaver** (`Screensaver`, `ShapeScene`): generated Material You-style wallpapers (rounded library shapes in one
+  tonal palette, big anchors plus small accents, a left scrim for the clock), hue and brightness from the time of day,
+  a new arrangement every hour, drawn on display frames.
 
 ## Layout
 
-960 × 540 dp canvas (TV baseline), 48 dp side margins (5% overscan safe area). Dock of six 16:9 tiles that exactly
-fill the width, on a see-through panel with a 1 dp light edge; Now Playing card 380 dp on the right.
-**Hero**: the focused item's art fills the screen behind Home under a scrim darkening toward the left and bottom,
-cross-fading on focus. A poster shows as is; an app's banner is drawn into 16 × 9 pixels and scaled up, a soft wash
-of its colors (never a real blur: too heavy for the target TVs). A chosen wallpaper replaces the hero. Home scrolls: a Continue watching row (when that tab
-is on) peeks 34 dp under the dock and scrolls up when focused.
+- Design baseline 960 x 540 dp, 48 dp side margins (5% overscan safe area). The dock has six 16:9 tiles that fill the
+  width; the **TV channels** row (on by default; Launcher Manager -> TV channels) sits in a slimmer dock under it, from the
+  preview programs the TV's apps publish; Now Playing is 380 dp at top-right; a Continue row (when enabled) peeks
+  34 dp under the dock and scrolls up when focused.
+- **Hero**: the focused item's art fills the screen behind Home under a scrim darkening toward the left and bottom,
+  cross-fading on focus. A poster shows as is; an app's banner is drawn at 320 x 180 (a TV banner's own size),
+  cover-cropped and scaled up — a soft wash of its colors, never a real blur.
+- A chosen wallpaper replaces the hero.
 
-## Commits
+## Privacy
 
-Small, one topic each, plain messages. **No `Co-Authored-By` or other AI attribution trailers.**
+`INTERNET` is used only for:
+
+- **Weather** (on by default; turn it off under Launcher settings -> Weather): with a city typed, the city goes to
+  Open-Meteo geocoding and then its coordinates to the forecast; with no city, the TV's rough location
+  (`ACCESS_COARSE_LOCATION`) if it has one, otherwise one ipwho.is request every 6 h for the city near the home's
+  public IP, then coordinates to Open-Meteo. Refreshes every 30 min (1 min retry offline).
+- **Screensaver photos** (off by default; only while the screensaver runs with photos on): a size-only request to
+  `picsum.photos` for a 1280 x 720 photo. The screensaver can also use the bundled wallpapers offline. The Home
+  wallpaper is always bundled and offline.
+- The optional **Continue** tab (off by default) reads Watch Next entries (`READ_TV_LISTINGS`) only while on and keeps
+  up to 12 played items (title, app, position) in local `SharedPreferences`, clearable in Launcher settings. A poster
+  that is an https address loads from the address the app supplied, so that app's image server sees the TV's address,
+  as the app itself would. Nothing the app reads on the TV is sent anywhere.
+- The **TV channels** row (on by default, turned off in Launcher Manager -> TV channels) reads the preview programs the
+  TV's apps publish (`READ_TV_LISTINGS`): the name, the logo address the app gave and the intent that opens that
+  channel. Only while the row is on, a logo loads from that address (kept in memory while the launcher runs), so that
+  app's image server sees the TV's address. The list stays in local `SharedPreferences`; nothing else leaves the TV.
+
+**Doc drift:** `Prefs.weatherOn()` defaults to on (`weather_off` is absent); the README's "weather off until you turn
+it on" and "the launcher itself never goes online" are stale. The code above is the source of truth.
+
+| `install.sh` switches on | Why |
+|---|---|
+| Accessibility service (*Home button*) | Catches the remote's Home button and the stock home screen; reads no screen content (`HomeKeyService`). |
+| Usage access | Orders the dock by how much each app is used. |
+| Continue watching and TV channels (`READ_TV_LISTINGS`) | Reads Watch Next only while the Continue tab is on, and the channel row only while that row is on. |
+| Notification access (*Now Playing*) | Sees which app is playing; reads no notifications (`MediaListener`). |
+| `DUMP` (low-RAM TVs only) | Android 9 ignores notification access on low-RAM TVs, so `SessionDump` reads `dumpsys media_session` instead. |
+| `ACCESS_COARSE_LOCATION` | Weather's place when no city is typed and the TV has a location. |
+
+The manifest also declares `REQUEST_DELETE_PACKAGES`; it only opens Android's own confirmation before an uninstall. If
+you add a permission that needs an ADB grant, update `install.sh` and this table.
 
 ## Install with a coding agent
 
-**Install it with your coding agent.** Turn on USB debugging on the TV ([how](#quick-start)), then paste this
-into Claude Code, Codex or any agent that can run commands:
+Turn on USB debugging on the TV (see Quick start), then paste this into an agent that can run commands:
 
 ```text
-Install Material TV Launcher (https://github.com/0xRampey/material-tv-launcher) on my Android TV
+Install Material TV Launcher from https://github.com/barotri-ton/material-tv-launcher on my Android TV
 by following its Quick start. My TV's IP address is 192.168.1.50.
 ```
 
-Use your TV's own IP address (Settings → Network & Internet). Rather do it yourself? See [Quick start](#quick-start).
+Use the TV's own IP address (Settings -> Network & Internet).
 
 ## Quick start
 
 You need a computer on the same Wi-Fi as the TV, with
-[ADB](https://developer.android.com/tools/releases/platform-tools) installed (`adb version` works in a terminal).
+[ADB](https://developer.android.com/tools/releases/platform-tools) installed (`adb version` works), and the TV's IP.
 
-**1. On the TV**
-Settings → System → About (on Android TV: Settings → Device Preferences → About) → press OK on **Android TV OS
-build** seven times → go back → Developer options → turn on **USB debugging** (and **Network debugging** if you
-see it). Note the TV's IP address under Settings → Network & Internet.
+**1. On the TV.** Settings -> System -> About (on Android TV: Settings -> Device Preferences -> About) -> press OK on
+**Android TV OS build** seven times -> go back -> Developer options -> turn on **USB debugging** (and **Network
+debugging** if you see it). Note the TV's IP address under Settings -> Network & Internet.
 
-**2. On your computer**
-Download the app and the scripts from the
-[latest release](https://github.com/0xRampey/material-tv-launcher/releases/latest) into one folder, then run
+**2. On the computer.** Download the app and the scripts from the
+[latest release](https://github.com/barotri-ton/material-tv-launcher/releases/latest) into one folder, then run
 `install.sh` with your TV's IP address:
 
 ```bash
-curl -fLO https://github.com/0xRampey/material-tv-launcher/releases/latest/download/material-tv-launcher.apk
-curl -fLO https://github.com/0xRampey/material-tv-launcher/releases/latest/download/install.sh
-curl -fLO https://github.com/0xRampey/material-tv-launcher/releases/latest/download/uninstall.sh
+curl -fLO https://github.com/barotri-ton/material-tv-launcher/releases/latest/download/material-tv-launcher.apk
+curl -fLO https://github.com/barotri-ton/material-tv-launcher/releases/latest/download/install.sh
+curl -fLO https://github.com/barotri-ton/material-tv-launcher/releases/latest/download/uninstall.sh
 bash install.sh 192.168.1.50
 ```
 
-**3. On the TV again**
-When the TV shows **Allow USB debugging?**, accept it; the script waits for you. It finishes with
-`Done: Material TV Launcher is on screen.` (if it says it isn't on screen yet, press Home). From then on, Home
-on the remote brings it up.
-
-Changed your mind? `bash uninstall.sh 192.168.1.50` brings the TV's own home screen back.
+**3. On the TV again.** When the TV shows **Allow USB debugging?**, accept it; the script waits for you. It finishes
+with `Done: Material TV Launcher is on screen.` (if it says it isn't on screen yet, press Home). From then on, Home on
+the remote brings it up. `bash uninstall.sh 192.168.1.50` restores the TV's own home screen.
 
 ## Screensaver setup
-
-<details>
-<summary><strong>Turn on the screensaver</strong></summary>
 
 ```bash
 adb shell settings put secure screensaver_components com.rampey.materialtv/com.rampey.materialtv.Screensaver
 ```
 
-Before switching, save the current one with `adb shell settings get secure screensaver_components`; to go back,
-`put` that value again.
-It starts after the TV's idle time (`adb shell settings get system screen_off_timeout`).
-</details>
-
-## Privacy
-
-`INTERNET` is used only by the weather and the screensaver photos. **Weather is on by default** (turn it off under
-Launcher settings → Weather, hold OK on **Settings**): with a city typed, it sends that city and then its coordinates to
-[Open-Meteo](https://open-meteo.com/); with none, it uses the TV's rough location (`ACCESS_COARSE_LOCATION`) if the TV
-has one, and otherwise asks [ipwho.is](https://ipwho.is/) once every 6 hours for the city near your home's public IP,
-then sends those coordinates to Open-Meteo. Screensaver photos (off until you turn them on) request a random photo of a
-given size from [picsum.photos](https://picsum.photos/) (photos from Unsplash). Nothing the app reads on the TV is sent anywhere. The optional **Continue** tab (off by default) reads what your apps
-publish under Continue watching and keeps a short list of what you played (title, app, position; up to 12, on the TV only,
-clearable in Launcher settings), only while the tab is on; a poster that is an https address loads from the address that app gave,
-which shows that app's image server your TV's address, as the app itself would. Check the
-permissions yourself: `aapt2 dump permissions material-tv-launcher.apk` (`aapt2` comes with the Android SDK build-tools).
-
-| `install.sh` switches on | Why |
-|---|---|
-| Accessibility service (*Home button*) | To catch the remote's Home button. It reads no screen content ([code](src/com/rampey/materialtv/HomeKeyService.java)). |
-| Usage access | To order the dock by how much you use each app. |
-| Continue watching (`READ_TV_LISTINGS`) | Granted by `install.sh`, used only if you turn the **Continue** tab on: it reads the Watch Next entries your apps publish on the TV. |
-| Notification access (*Now Playing*) | To see which app is playing. It reads no notifications ([code](src/com/rampey/materialtv/MediaListener.java)). |
-| `DUMP`, low-RAM TVs only (*Now Playing*) | Android 9 ignores notification access on low-RAM TVs, so there the launcher reads `dumpsys media_session` instead: app, title, subtitle, play state and position, on the TV only ([code](src/com/rampey/materialtv/SessionDump.java)). |
-
-## Build it yourself
-
-<details>
-<summary><strong>No Gradle, just the Android SDK</strong></summary>
-
-You need the Android SDK (platform 34, build-tools 34.0.0) and JDK 17.
-
-```bash
-./build.sh                    # → build/material-tv-launcher.apk, signed with your Android debug key
-./install.sh 192.168.1.50
-```
-
-Set `KEYSTORE`, `KEYSTORE_PASS` and `KEY_ALIAS` to sign with your own key, and `ANDROID_HOME` if your SDK lives
-elsewhere. The code is plain Java:
-
-| File | What it is |
-|---|---|
-| [`HomeActivity.java`](src/com/rampey/materialtv/HomeActivity.java) | The home screen: clock, buttons, dock, Apps grid, Now Playing |
-| [`Palette.java`](src/com/rampey/materialtv/Palette.java) | Colors from each app's banner |
-| [`Motion.java`](src/com/rampey/materialtv/Motion.java) | Material 3 Expressive spring curves |
-| [`ButtonGroup.java`](src/com/rampey/materialtv/ButtonGroup.java) | The top-bar strip |
-| [`CookieDrawable.java`](src/com/rampey/materialtv/CookieDrawable.java) | The morphing background shape |
-| [`Screensaver.java`](src/com/rampey/materialtv/Screensaver.java), [`ShapeScene.java`](src/com/rampey/materialtv/ShapeScene.java) | The time-of-day screensaver |
-| [`HomeKeyService.java`](src/com/rampey/materialtv/HomeKeyService.java) | The Home-button redirect |
-</details>
+Before switching, save the current one with `adb shell settings get secure screensaver_components`; to go back, `put`
+that value again. It starts after the TV's idle time (`adb shell settings get system screen_off_timeout`).
 
 ## Troubleshooting
 
-- **Home still opens Google TV.** The accessibility service is off. Run `install.sh` again, or turn on **Home
-  button** under Settings → System → Accessibility.
-- **Google TV flashes for a second after the TV boots.** Expected: Android starts the service a moment after
-  boot, then this launcher takes over.
+- **Home still opens Google TV.** The accessibility service is off. Run `install.sh` again, or turn on **Home button**
+  under Settings -> System -> Accessibility.
+- **Google TV flashes for a second after the TV boots.** Expected: Android starts the service a moment after boot, then
+  this launcher takes over.
 - **`adb` says unauthorized.** Accept the **Allow USB debugging?** prompt on the TV and run the script again.
-- **No Now Playing card.** The app has to publish what it's playing. Some apps also stop playing as soon as you
-  leave them. On a low-RAM TV (`adb shell getprop ro.config.low_ram` says `true`) Android never turns notification
-  access on; `install.sh` grants `DUMP` there instead (`adb shell pm grant com.rampey.materialtv android.permission.DUMP`).
-  That way has no album art or length, and play/pause presses the remote's play/pause key.
-- **No console tile.** Your console has to announce itself over HDMI-CEC. Turn on HDMI-CEC (your TV may call it
-  "HDMI Device Control" or a brand name ending in Sync or Link) on both the TV and the console.
+- **No Now Playing card.** The app has to publish what it's playing. On a low-RAM TV (`adb shell getprop
+  ro.config.low_ram` says `true`), Android never turns notification access on; `install.sh` grants `DUMP` and
+  `SessionDump` reads `dumpsys media_session` (no art or length; play/pause uses the remote key).
+- **No console tile.** HDMI-CEC has to be on for both the TV and the console (the TV may call it "HDMI Device Control"
+  or a brand name ending in Sync or Link).
 
-## Questions people ask
+## Commits and pull requests
 
-**Is it safe? Can it break my TV?**
-No. It's one ordinary app. Nothing is rooted, flashed or deleted, and `uninstall.sh` undoes everything.
+- Small commits, one topic each, plain messages. **No `Co-Authored-By` or other AI attribution trailers.**
+- One topic per PR; say which TV you tested on. Contributions are Apache 2.0.
+- For a PR you create or push, post exactly one report comment starting with `<!-- codex-pr-report -->`; edit that
+  comment after later pushes instead of adding another. Include, as applicable: summary, user flow, architecture/trust
+  boundaries, changes, security, build/test evidence, deploy status, rollout notes and a reviewer guide. Never claim a
+  test, migration or deployment passed without verifying it. Don't commit the report as a file unless asked.
+- After posting, read the PR back, verify the marked comment exists, and give links to both the PR and the comment.
 
-**Why not [tv-vibehack](https://github.com/Gathin23/tv-vibehack)?**
-It's a full kit for cleaning up a TV, with its own Apple TV-style launcher. This is only a launcher: pretty light, made
-for weak TVs, in Material 3 Expressive. You can use this launcher on its own or alongside tv-vibehack.
+## License and assets
 
-**How much memory does it use?**
-About 40 MB (PSS in `adb shell dumpsys meminfo com.rampey.materialtv`). On our test TV, Google TV's own home used
-about 150 MB measured the same way, across its two processes. Your numbers will differ.
-
-**Does it switch my PS5 on?**
-Only when you select its tile. Switching to the input wakes the console over HDMI-CEC, same as the TV's input
-menu.
-
-**Can I pin my own apps?**
-Yes. Hold OK on any tile (in the dock or on the Apps page) and choose *Pin to dock*; the same menu moves a pinned app left or right, unpins it, or opens its app info. Pinned apps sit first in the dock and the rest still follows what you use. Hold OK on **Settings** for launcher settings: animations on or off (turn them off on a TV that struggles), apps per row, clock (follow the TV, 12 or 24 hour), an app to open when the TV starts, hidden apps, an optional **Continue** tab (what you played here, plus what your apps offer under Continue watching, with the focused item shown large above the row), a wallpaper (one of 14 bundled photos behind Home, or none), colors (follow the focused app, or a fixed Ocean, Forest, Sunset, Rose, Violet or Graphite palette), optional weather and screensaver photos (online, or the bundled wallpapers offline), and a reset. The **Settings** tab opens a quick panel (Preferences, Wi-Fi, Display, Sound, Screen saver, Default home, TV settings); hold OK on it for Launcher settings directly. The tile menu can also put an app in a folder (folders show first on the Apps page; hold OK on a folder to rename or delete it), hide an app without uninstalling it, or uninstall an app you installed (Android asks you to confirm).
-
-## License
-
-Apache 2.0, see [`LICENSE`](LICENSE). Bundled:
-[material-color-utilities](https://github.com/material-foundation/material-color-utilities) (Apache 2.0) and
-[Google Sans Flex](https://github.com/googlefonts/googlesans-flex) (SIL Open Font License 1.1). "Google",
-"Google Sans" and "Material Design" belong to Google; this project is not affiliated with or endorsed by Google.
-
-The 14 photos in [`assets/wallpapers`](assets/wallpapers) are **not** under Apache 2.0: eight are NASA photos of Earth from
-the International Space Station (public domain) and six are Wikimedia Commons photographs under CC BY-SA 3.0 or 4.0,
-cropped and resized to 1920 × 1080 (the picture set comes from [glassOS-tv](https://github.com/jmarknavarro/glassOS-tv)).
-Photographers, titles and licence links are in [`assets/wallpapers/CREDITS.md`](assets/wallpapers/CREDITS.md); keep that file with the pictures.
-
-## Pull request reports
-
-- Every pull request created or pushed by Codex must have exactly one detailed
-  GitHub PR report comment. Do not commit the report as a repository file unless
-  the user explicitly requests a file artifact.
-- Start the comment with the stable marker `<!-- codex-pr-report -->`. Before
-  posting, search existing PR comments for that marker. Create the comment when
-  absent; edit the existing comment after subsequent pushes instead of adding a
-  duplicate.
-- Use GitHub-rendered HTML and Markdown in the comment. Include, as applicable:
-  executive summary, end-to-end user flow, architecture and trust boundaries,
-  feature change set, database migrations, security considerations, test and
-  build evidence, deployment status, rollout notes, deferred scope, and a
-  reviewer guide with primary files.
-- The report must describe the tested PR head and distinguish deployed code from
-  local or undeployed work. Never claim a test, migration, deployment, or check
-  passed without verifying it.
-- After creating or updating the report, read the PR back, verify that the marked
-  comment exists, and give the user direct links to both the PR and report
-  comment. Do not call PR work complete until this verification succeeds.
+Apache 2.0 (`LICENSE`). Bundled: material-color-utilities (Apache 2.0) and Google Sans Flex (SIL OFL 1.1). The 14
+wallpapers in `assets/wallpapers` are **not** Apache 2.0: eight NASA photos (public domain) and six Wikimedia Commons
+photos (CC BY-SA 3.0/4.0).
+Keep `assets/wallpapers/CREDITS.md` with them. Not affiliated with or endorsed by Google.

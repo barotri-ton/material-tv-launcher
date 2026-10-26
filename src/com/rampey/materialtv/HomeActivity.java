@@ -101,7 +101,7 @@ public class HomeActivity extends Activity {
     private boolean drifting;
     private final Runnable drift = new Runnable() {
         @Override public void run() {
-            if (!drifting) return;
+            if (!drifting || !shape.isAttachedToWindow()) return;   // the shape is not on screen: nothing to turn
             long now = android.os.SystemClock.uptimeMillis();
             // Every display frame: 60 fps on a 60 Hz TV (owner choice; ~50% of one core, only while Home is up).
             if (driftLast == 0 || now - driftLast >= DRIFT_FRAME_MS) {
@@ -117,10 +117,23 @@ public class HomeActivity extends Activity {
         }
     };
     private GradientDrawable dockShape;
+    private GradientDrawable channelShape;
     private View homePage;
     private ScrollView appsPage;
     private GridLayout appsGrid;
     private LinearLayout dock;
+    /** The TV channels row under the dock, and what it currently shows. */
+    private FrameLayout channelDock;
+    private LinearLayout channelRow;
+    private String channelKey = "";
+    private final List<TvChannels.Channel> channelList = new ArrayList<>();
+    private final Map<String, Bitmap> channelLogos = new java.util.LinkedHashMap<String, Bitmap>(16, 0.75f, true) {
+        @Override protected boolean removeEldestEntry(Map.Entry<String, Bitmap> eldest) {
+            return size() > 40;   // small, mostly transparent logos: about 1 MB in all
+        }
+    };
+    private final Set<String> logoLoading = new java.util.HashSet<>();
+    private boolean channelsLoading;
     private TextView clock;
     private TextView date;
     private TextView weather;
@@ -290,6 +303,7 @@ public class HomeActivity extends Activity {
     @Override protected void onResume() {
         super.onResume();
         fillDock();
+        fillChannels();
         fillHomeContinue();
         if (showingApps && !showingContinue) fillApps();
         if (showingContinue) refreshContinue();
@@ -396,16 +410,11 @@ public class HomeActivity extends Activity {
         styleHeroScrim(palette.surface);
         root.addView(heroScrim, match());
 
-        // One Expressive "cookie" shape behind everything, drifting slowly and turning a little more when focus
-        // moves. It sits on its own GPU layer, so each step only moves the layer; nothing is redrawn.
+        // The Expressive "cookie" shape is no longer shown (it read as a stray colored block in the corner, and its drift
+        // cost a CPU core on weak TVs); the object stays so the code that recolors or rotates it has a target.
         cookie = new CookieDrawable(palette.primaryContainer, 9, 0.08f);
         ImageView big = new ImageView(this);
         big.setImageDrawable(cookie);
-        big.setAlpha(0.55f);
-        big.setLayerType(View.LAYER_TYPE_HARDWARE, null);
-        FrameLayout.LayoutParams bigLp = new FrameLayout.LayoutParams(dp(560), dp(560), Gravity.END | Gravity.TOP);
-        bigLp.setMargins(0, -dp(150), -dp(120), 0);
-        root.addView(big, bigLp);
         shape = big;
 
         LinearLayout column = new LinearLayout(this);
@@ -576,18 +585,42 @@ public class HomeActivity extends Activity {
         dockShape.setColor(withAlpha(palette.container, DOCK_ALPHA));
         dockShape.setStroke(dp(1), withAlpha(palette.onSurface, DOCK_EDGE));
         dockFrame.setBackground(dockShape);
-        dockFrame.setPadding(dp(DOCK_PAD), dp(6), dp(DOCK_PAD), dp(6));
+        dockFrame.setPadding(dp(DOCK_PAD), dp(4), dp(DOCK_PAD), dp(4));
 
         HorizontalScrollView scroller = new HorizontalScrollView(this);
         scroller.setHorizontalScrollBarEnabled(false);
         scroller.setClipToPadding(false);
         scroller.setClipChildren(false);
-        scroller.setPadding(dp(SCROLL_PAD), dp(20), dp(SCROLL_PAD), dp(16));
+        scroller.setPadding(dp(SCROLL_PAD), dp(14), dp(SCROLL_PAD), dp(4));
         dock = new LinearLayout(this);
         dock.setClipChildren(false);
         scroller.addView(dock);
         dockFrame.addView(scroller);
         page.addView(dockFrame, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        // The TV channels row: what the TV's own channel apps publish to Android TV's channel row, in a slimmer
+        // version of the dock under it. Hidden until the row is turned on and an app has published something.
+        channelDock = new FrameLayout(this);
+        channelDock.setClipChildren(false);
+        channelShape = new GradientDrawable();
+        channelShape.setCornerRadius(dp(32));
+        channelShape.setColor(withAlpha(palette.container, DOCK_ALPHA));
+        channelShape.setStroke(dp(1), withAlpha(palette.onSurface, DOCK_EDGE));
+        channelDock.setBackground(channelShape);
+        channelDock.setPadding(dp(DOCK_PAD), dp(4), dp(DOCK_PAD), dp(4));
+        channelDock.setVisibility(View.GONE);
+        HorizontalScrollView channelScroller = new HorizontalScrollView(this);
+        channelScroller.setHorizontalScrollBarEnabled(false);
+        channelScroller.setClipToPadding(false);
+        channelScroller.setClipChildren(false);
+        channelScroller.setPadding(dp(SCROLL_PAD), dp(12), dp(SCROLL_PAD), dp(4));
+        channelRow = new LinearLayout(this);
+        channelRow.setClipChildren(false);
+        channelScroller.addView(channelRow);
+        channelDock.addView(channelScroller);
+        LinearLayout.LayoutParams channelsAt = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        channelsAt.topMargin = dp(CHANNEL_GAP);
+        page.addView(channelDock, channelsAt);
         return page;
     }
 
@@ -778,6 +811,179 @@ public class HomeActivity extends Activity {
     }
 
     private String refocusPkg;
+
+    // ---- TV channels ----
+
+    private static final int CHANNEL_TILE = 104, CHANNEL_GAP = 10;
+
+    /** The row: the list kept on the TV at once, then what the TV's apps publish right now (read in the background). */
+    private void fillChannels() {
+        if (channelDock == null) return;
+        if (!prefs.tvChannelsOn()) {
+            channelDock.setVisibility(View.GONE);
+            return;
+        }
+        List<TvChannels.Channel> cached = TvChannels.cached(prefs.tvChannelsRaw());
+        if (!cached.isEmpty()) showChannels(cached);
+        loadChannels();
+    }
+
+    private void loadChannels() {
+        if (channelsLoading || !prefs.tvChannelsOn()) return;
+        channelsLoading = true;
+        TvChannels.load(handler, getContentResolver(), getPackageName(), list -> {
+            channelsLoading = false;
+            if (!prefs.tvChannelsOn()) return;
+            List<TvChannels.Channel> channels = list != null ? list : new ArrayList<>();
+            prefs.setTvChannelsRaw(TvChannels.json(channels));
+            showChannels(channels);
+        });
+    }
+
+    private void showChannels(List<TvChannels.Channel> channels) {
+        if (channels.isEmpty() && channelRow.getChildCount() == 0) {
+            channelList.clear();
+            channelKey = "";
+            channelDock.setVisibility(View.GONE);
+            return;
+        }
+        channelDock.setVisibility(channels.isEmpty() ? View.GONE : View.VISIBLE);
+        String key = TvChannels.key(channels);
+        if (key.equals(channelKey) && channelRow.getChildCount() > 0) return;
+        boolean keepFocus = channelRow.hasFocus();
+        channelKey = key;
+        channelList.clear();
+        channelList.addAll(channels);
+        channelRow.removeAllViews();
+        for (int i = 0; i < channels.size(); i++) {
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            if (i > 0) lp.setMarginStart(dp(CHANNEL_GAP));
+            View tile = channelTile(channels.get(i), i < 8);
+            channelRow.addView(tile, lp);
+            arrive(tile, Math.min(i, 6));
+        }
+        if (keepFocus && channelRow.getChildCount() > 0) channelRow.getChildAt(0).requestFocus();
+    }
+
+    /** A channel: a 16:9 card like a dock tile, with the logo the app published, or its name until that arrives. */
+    private View channelTile(TvChannels.Channel ch, boolean eager) {
+        int w = dp(CHANNEL_TILE), h = w * 9 / 16;
+        int radius = dp(Focus.MEDIA);
+        LinearLayout holder = new LinearLayout(this);
+        holder.setOrientation(LinearLayout.VERTICAL);
+        holder.setClipChildren(false);
+        holder.setGravity(Gravity.CENTER_HORIZONTAL);
+
+        FrameLayout card = new FrameLayout(this);
+        card.setFocusable(true);
+        card.setClickable(true);
+        GradientDrawable cardShape = new GradientDrawable();
+        cardShape.setCornerRadius(radius);
+        cardShape.setColor(palette.containerHigh);
+        card.setBackground(cardShape);
+        card.setClipToOutline(true);
+
+        ImageView logo = new ImageView(this);
+        logo.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        logo.setPadding(dp(16), dp(10), dp(16), dp(10));
+        card.addView(logo, match());
+        // The name sits over the logo until it loads (a transparent logo would otherwise show the name through it).
+        TextView mark = text(ch.title, 17, palette.onSurfaceVariant, 700);
+        mark.setGravity(Gravity.CENTER);
+        mark.setSingleLine(true);
+        mark.setEllipsize(TextUtils.TruncateAt.END);
+        mark.setPadding(dp(12), 0, dp(12), 0);
+        card.addView(mark, match());
+        card.setContentDescription(ch.title);
+        if (eager) loadLogo(ch, logo, mark);
+
+        GradientDrawable ring = new GradientDrawable();
+        ring.setCornerRadius(radius + dp(RING));
+        ring.setColor(Color.TRANSPARENT);
+        FrameLayout ringFrame = new FrameLayout(this);
+        ringFrame.setClipChildren(false);
+        ringFrame.setPadding(dp(RING), dp(RING), dp(RING), dp(RING));
+        ringFrame.setBackground(ring);
+        ringFrame.addView(card, new FrameLayout.LayoutParams(w, h));
+
+        CookieDrawable loaderShape = new CookieDrawable(palette.primary, 4, 0.18f);
+        ImageView loader = new ImageView(this);
+        loader.setImageDrawable(loaderShape);
+        loader.setVisibility(View.GONE);
+        ringFrame.addView(loader, new FrameLayout.LayoutParams(dp(40), dp(40), Gravity.CENTER));
+        card.setOnClickListener(v -> {
+            Intent intent = channelIntent(ch);
+            if (intent != null) pressAndLaunch(ringFrame, loader, loaderShape, intent);
+        });
+
+        TextView caption = text(ch.title, 13, palette.onSurfaceVariant, 560);
+        caption.setGravity(Gravity.CENTER_HORIZONTAL);
+        caption.setSingleLine(true);
+        caption.setEllipsize(TextUtils.TruncateAt.END);
+        caption.setAlpha(0.85f);
+
+        card.setOnFocusChangeListener((v, focused) -> {
+            float scale = focused ? 1.10f : 1f;
+            ringFrame.animate().scaleX(scale).scaleY(scale)
+                    .setInterpolator(Motion.FAST_SPATIAL).setDuration(Motion.FAST_SPATIAL_MS).start();
+            card.setOutlineSpotShadowColor(palette.primary);
+            card.setOutlineAmbientShadowColor(palette.primary);
+            card.animate().translationZ(focused ? dp(14) : 0)
+                    .setInterpolator(Motion.FAST_EFFECTS).setDuration(Motion.DEFAULT_EFFECTS_MS).start();
+            ObjectAnimator corners = ObjectAnimator.ofFloat(cardShape, "cornerRadius", cardShape.getCornerRadius(), focused ? radius * 0.62f : radius)
+                    .setDuration(Motion.FAST_SPATIAL_MS);
+            corners.setInterpolator(Motion.FAST_SPATIAL);
+            corners.start();
+            ring.setCornerRadius((focused ? radius * 0.62f : radius) + dp(RING));
+            fadeRing(ring, focused);
+            shiftNeighbors(holder, focused);
+            caption.animate().alpha(focused ? 1f : 0.85f).setInterpolator(Motion.FAST_EFFECTS).setDuration(Motion.FAST_EFFECTS_MS).start();
+            caption.setTextColor(focused ? palette.onSurface : palette.onSurfaceVariant);
+            if (focused) {
+                loadLogo(ch, logo, mark);
+                setFocusTitle(ch.title);
+                if (homeScroll.getScrollY() != 0) homeScroll.smoothScrollTo(0, 0);
+            }
+        });
+
+        holder.addView(ringFrame, new LinearLayout.LayoutParams(w + dp(2 * RING), h + dp(2 * RING)));
+        LinearLayout.LayoutParams cl = new LinearLayout.LayoutParams(w + dp(2 * RING), dp(22));
+        cl.topMargin = dp(4);
+        holder.addView(caption, cl);
+        return holder;
+    }
+
+    /** The channel's own intent; else the app that published it. Null when neither opens anything. */
+    private Intent channelIntent(TvChannels.Channel ch) {
+        Intent intent = TvChannels.intent(ch);
+        if (intent != null && pm.resolveActivity(intent, 0) != null) return intent;
+        return launchIntent(ch.pkg);
+    }
+
+    /**
+     * The logo from the address the channel app published (only while the row is on), kept in memory. The tile reads
+     * the channel's name until it arrives, and keeps it when the app published no logo or the address fails.
+     */
+    private void loadLogo(TvChannels.Channel ch, ImageView logo, TextView mark) {
+        if (ch.logo == null || ch.logo.isEmpty()) return;
+        Bitmap known = channelLogos.get(ch.logo);
+        if (known != null) {
+            showLogo(logo, mark, known);
+            return;
+        }
+        if (!logoLoading.add(ch.logo)) return;
+        Photos.image(handler, getContentResolver(), ch.logo, dp(CHANNEL_TILE), bitmap -> {
+            logoLoading.remove(ch.logo);
+            if (bitmap == null) return;
+            channelLogos.put(ch.logo, bitmap);
+            showLogo(logo, mark, bitmap);
+        });
+    }
+
+    private void showLogo(ImageView logo, TextView mark, Bitmap bitmap) {
+        logo.setImageBitmap(bitmap);
+        mark.setVisibility(View.GONE);
+    }
 
     private void fillApps() {
         Set<String> seen = new LinkedHashSet<>();
@@ -977,8 +1183,8 @@ public class HomeActivity extends Activity {
         holder.addView(ringFrame, new LinearLayout.LayoutParams(w + dp(2 * RING), h + dp(2 * RING)));
         // Fixed height so the dock never jumps; a little wider than the tile (negative margins keep the spacing) so a
         // name with a status mark beside it still fits.
-        LinearLayout.LayoutParams rl = new LinearLayout.LayoutParams(w + dp(48), dp(32));
-        rl.topMargin = dp(8);
+        LinearLayout.LayoutParams rl = new LinearLayout.LayoutParams(w + dp(48), dp(24));
+        rl.topMargin = dp(4);
         rl.leftMargin = -dp(24);
         rl.rightMargin = -dp(24);
         holder.addView(captionRow, rl);
@@ -1064,16 +1270,19 @@ public class HomeActivity extends Activity {
     /** Runs once focus has rested for a moment: the title, the background shape and the colors follow the app. */
     private void applyFocus(String pkg, CharSequence label, Drawable art) {
         if (pkg == null) return;
-        if (!showingApps && !TextUtils.equals(focusTitle.getText(), label)) {
-            focusTitle.setText(label);
-            focusTitle.setAlpha(0f);
-            focusTitle.setTranslationY(dp(12));
-            focusTitle.animate().alpha(1f).translationY(0).setInterpolator(Motion.DEFAULT_SPATIAL).setDuration(Motion.DEFAULT_SPATIAL_MS).start();
-            animateTitleWeight();
-        }
-        morphShape(pkg);
+        if (!showingApps) setFocusTitle(label);
         retint(paletteFor(pkg, art));
         if (!showingApps) showHeroArt(pkg, heroPosters.get(pkg), art);
+    }
+
+    /** The name above the dock: Home only, and only when it changes (a long channel row would re-animate it). */
+    private void setFocusTitle(CharSequence label) {
+        if (label == null || TextUtils.equals(focusTitle.getText(), label)) return;
+        focusTitle.setText(label);
+        focusTitle.setAlpha(0f);
+        focusTitle.setTranslationY(dp(12));
+        focusTitle.animate().alpha(1f).translationY(0).setInterpolator(Motion.DEFAULT_SPATIAL).setDuration(Motion.DEFAULT_SPATIAL_MS).start();
+        animateTitleWeight();
     }
 
     // ---- hero ----
@@ -1239,6 +1448,10 @@ public class HomeActivity extends Activity {
             cookie.setColor((int) argb.evaluate(t, from.primaryContainer, next.primaryContainer));
             dockShape.setColor(withAlpha((int) argb.evaluate(t, from.container, next.container), DOCK_ALPHA));
             dockShape.setStroke(dp(1), withAlpha((int) argb.evaluate(t, from.onSurface, next.onSurface), DOCK_EDGE));
+            if (channelShape != null) {
+                channelShape.setColor(withAlpha((int) argb.evaluate(t, from.container, next.container), DOCK_ALPHA));
+                channelShape.setStroke(dp(1), withAlpha((int) argb.evaluate(t, from.onSurface, next.onSurface), DOCK_EDGE));
+            }
             styleHeroScrim(bottom);
         });
         colorAnimator.start();
@@ -1513,6 +1726,17 @@ public class HomeActivity extends Activity {
                     prefs.setContinueOn(!prefs.continueOn());
                     applyContinueTab();
                     fillHomeContinue();
+                    showLauncherSettings();
+                })
+                .row("TV channels", () -> !prefs.tvChannelsOn() ? "Off"
+                        : channelList.isEmpty() ? "None found" : channelList.size() + (channelList.size() == 1 ? " channel" : " channels"), () -> {
+                    prefs.setTvChannelsOn(!prefs.tvChannelsOn());
+                    if (prefs.tvChannelsOn()) {
+                        fillChannels();
+                    } else {
+                        channelDock.setVisibility(View.GONE);
+                        channelKey = "";
+                    }
                     showLauncherSettings();
                 })
                 .row("Open on start", () -> {

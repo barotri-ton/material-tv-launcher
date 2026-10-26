@@ -170,6 +170,26 @@ final class Prefs {
         sp.edit().putBoolean("continue", on).apply();
     }
 
+    // ---- TV channels (the row under the dock, fed by the TV's own channel apps) ----
+
+    /** The TV channels row: on until it is turned off (its logos come from the addresses the apps publish). */
+    boolean tvChannelsOn() {
+        return sp.getBoolean("tv_channels", true);
+    }
+
+    void setTvChannelsOn(boolean on) {
+        sp.edit().putBoolean("tv_channels", on).apply();
+    }
+
+    /** The channels as last read from the TV, kept so the row shows before the table is read again. */
+    String tvChannelsRaw() {
+        return sp.getString("tv_channels_cache", "");
+    }
+
+    void setTvChannelsRaw(String json) {
+        sp.edit().putString("tv_channels_cache", json).apply();
+    }
+
     // ---- recently played (kept on the TV, only while the Continue tab is on) ----
 
     private static final int MAX_RECENT = 12;
@@ -304,7 +324,7 @@ final class Prefs {
     /** Every choice back to how it came; pinned and hidden apps stay. */
     void resetSettings() {
         SharedPreferences.Editor e = sp.edit();
-        for (String key : new String[]{"reduced_motion", "columns", "clock_mode", "start_app", "fahrenheit", "photos", "photos_mode", "wallpaper", "wallpaper_every", "wallpaper_now", "wallpaper_at","continue", "recent", "color_theme", "weather_city", "weather_lat",
+        for (String key : new String[]{"reduced_motion", "columns", "clock_mode", "start_app", "fahrenheit", "photos", "photos_mode", "wallpaper", "wallpaper_every", "wallpaper_now", "wallpaper_at","continue", "tv_channels", "tv_channels_cache", "recent", "color_theme", "weather_city", "weather_lat",
                 "weather_lon", "weather_text", "weather_at", "weather_off", "auto_city", "auto_lat", "auto_lon", "auto_at"}) e.remove(key);
         e.apply();
     }

@@ -35,6 +35,12 @@ final class ButtonGroup extends LinearLayout {
     private Palette palette;
 
     ButtonGroup(Context context, Typeface face, Palette palette, String[] labels, int[] icons, boolean[] selectable, Listener listener) {
+        this(context, face, palette, labels, icons, selectable, false, listener);
+    }
+
+    /** iconsOnly: round icon buttons (the label becomes the content description), for a minimal top bar. */
+    ButtonGroup(Context context, Typeface face, Palette palette, String[] labels, int[] icons, boolean[] selectable,
+                boolean iconsOnly, Listener listener) {
         super(context);
         this.palette = palette;
         this.selectable = selectable;
@@ -48,18 +54,23 @@ final class ButtonGroup extends LinearLayout {
         for (int i = 0; i < labels.length; i++) {
             final int index = i;
             TextView b = new TextView(context);
-            b.setText(labels[i]);
-            b.setTypeface(face);
-            b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
+            if (iconsOnly) {
+                b.setContentDescription(labels[i]);
+            } else {
+                b.setText(labels[i]);
+                b.setTypeface(face);
+                b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
+            }
             b.setGravity(Gravity.CENTER);
-            b.setPadding(dp(20), dp(11), dp(22), dp(11));
+            if (iconsOnly) b.setPadding(dp(13), dp(13), dp(13), dp(13));
+            else b.setPadding(dp(20), dp(11), dp(22), dp(11));
             b.setFocusable(true);
             b.setClickable(true);
             Drawable icon = context.getDrawable(icons[i]);
             if (icon != null) {
-                icon.setBounds(0, 0, dp(18), dp(18));
+                icon.setBounds(0, 0, dp(iconsOnly ? 20 : 18), dp(iconsOnly ? 20 : 18));
                 b.setCompoundDrawablesRelative(icon, null, null, null);
-                b.setCompoundDrawablePadding(dp(8));
+                if (!iconsOnly) b.setCompoundDrawablePadding(dp(8));
             }
             b.setOnClickListener(v -> listener.onPick(index));
             b.setOnFocusChangeListener((v, focused) -> {

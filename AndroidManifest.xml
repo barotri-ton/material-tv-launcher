@@ -4,8 +4,12 @@
 
     <uses-feature android:name="android.software.leanback" android:required="false" />
 
-    <!-- Online only for the optional weather and screensaver photos (both off until you turn them on). -->
+    <!-- Online for the weather (on by default) and the optional screensaver photos. -->
     <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- The weather's place when no city is typed: the TV's own rough location, if it has one (granted by install.sh;
+         most TVs have none, and the place is then guessed from the home's IP). -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
 
     <!-- Android 11+ package visibility: only apps with a TV or phone launcher entry. -->
@@ -28,6 +32,10 @@
 
     <!-- The optional Continue tab: what the TV's apps offer under Continue watching (Watch Next). -->
     <uses-permission android:name="android.permission.READ_TV_LISTINGS" />
+
+    <!-- Now Playing on TVs that never allow notification access (low-RAM Android 9): read `dumpsys media_session`
+         on the TV only (granted over ADB by install.sh). -->
+    <uses-permission android:name="android.permission.DUMP" />
 
     <!-- The tile menu's Uninstall: opens Android's own confirmation for apps the user installed. -->
     <uses-permission android:name="android.permission.REQUEST_DELETE_PACKAGES" />

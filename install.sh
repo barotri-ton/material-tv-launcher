@@ -29,8 +29,15 @@ adb -s "$T" install -r "$APK"
 
 # Now Playing card: see which app is playing (reads no notifications).
 S cmd notification allow_listener "$PKG/$PKG.MediaListener"
+# Low-RAM TVs (ro.config.low_ram=true) ignore the line above: Now Playing reads the media session dump instead.
+if [[ "$(S getprop ro.config.low_ram)" == "true" ]]; then
+  S pm grant "$PKG" android.permission.DUMP || true
+fi
 # Dock order: per-app screen time, read on the TV only.
 S cmd appops set "$PKG" GET_USAGE_STATS allow
+
+# Weather: the TV's rough location, when it has one (otherwise the city is guessed from the home's IP).
+S pm grant "$PKG" android.permission.ACCESS_COARSE_LOCATION || true
 
 # Continue tab: read what apps offer under Continue watching (only used if you turn the tab on).
 S pm grant "$PKG" android.permission.READ_TV_LISTINGS || true
